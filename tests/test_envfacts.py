@@ -347,6 +347,22 @@ def test_prefix_stage_envfacts_profile_needs_no_runner_and_reports_zero(tmp_path
 
 
 # ---- rtk's Codex mode puts `rtk` in front of every command the agent types ----------------
+def test_a_credential_set_on_a_command_line_is_never_recorded():
+    """An environment fact is persisted and stated to every later session of the repository,
+    across agents: a variable named like a credential, a value with a known token prefix, or a
+    long letters-and-digits value is left out; an ordinary setting is kept."""
+    cmd = ("export DJANGO_SETTINGS_MODULE=app.settings GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuv "
+           "AWS_SECRET_ACCESS_KEY=x DATABASE_URL=sqlite:///db.sqlite3 "
+           "SESSION_SALT=Zq8kL2mN9pR4sT7vW1xY3bC6dF0gH5jK ANTHROPIC_API_KEY=sk-ant-x && pytest")
+    sets = observe._env_calls(cmd, "", True)["sets"]
+    assert sets == {"DJANGO_SETTINGS_MODULE": "app.settings",
+                    "DATABASE_URL": "sqlite:///db.sqlite3"}
+    assert observe.looks_secret("OP_SERVICE_ACCOUNT_TOKEN", "x")
+    assert observe.looks_secret("X", "eyJhbGciOiJIUzI1NiJ9")
+    assert not observe.looks_secret("PYTHONPATH", "/usr/lib/python3.12/site-packages")
+    assert not observe.looks_secret("NODE_VERSION", "22.11.0")
+
+
 def test_the_classifier_sees_through_rtks_command_prefix():
     """An agent told to type `rtk pytest`, `rtk git status`, `rtk proxy <cmd>` must still be
     read as running the tests, fetching, querying the repository. Pinned as bare == prefixed,

@@ -569,11 +569,30 @@ def label_rule(a, b):
     return None
 
 
+# A variable whose name or value says credential is never recorded: a fact is persisted and
+# stated to every later session in the repository, across agents, and must not carry one.
+_SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|PASSW|PASSPHRASE|(?:^|_)KEY(?:_|$)|API_?KEY|AUTH|"
+                             r"CREDENTIAL|COOKIE|PRIVATE", re.I)
+_SECRET_VALUE_RE = re.compile(r"^(?:sk-|sk_|ghp_|gho_|ghs_|ghu_|github_pat_|xox[abprs]-|AKIA|"
+                              r"ASIA|eyJ|glpat-|npm_|pypi-|hf_|AIza|op://|dop_v1_|lin_api_)")
+
+
+def looks_secret(name, value):
+    """Whether an environment setting may be a credential: by the variable's name, by a known
+    token prefix, or by a long value mixing letters and digits that is not a path or a version."""
+    if _SECRET_NAME_RE.search(name or "") or _SECRET_VALUE_RE.match(value or ""):
+        return True
+    v = value or ""
+    return (len(v) >= 32 and any(c.isdigit() for c in v) and any(c.isalpha() for c in v)
+            and "/" not in v and "." not in v)
+
+
 def _env_calls(cmd, out, success):
     """What one call says about environment variables: those its output asks for, and those
-    its command sets (inline, exported or in the code it runs)."""
+    its command sets (inline, exported or in the code it runs), credentials left out."""
     sets = {m.group(1): m.group(3) for m in _ENV_PREFIX_RE.finditer(cmd)}
     sets.update({m.group(1): m.group(2) for m in _ENV_INCODE_RE.finditer(cmd)})
+    sets = {k: v for k, v in sets.items() if not looks_secret(k, v)}
     return {"need": sorted(set(_ENV_NEED_RE.findall(out or ""))), "sets": sets,
             "ok": bool(success) and not _FAILED_RE.search(out or "")}
 

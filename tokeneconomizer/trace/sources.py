@@ -520,7 +520,7 @@ class OpenCodeSource(Source):
         db = self._db(env)
         if not db or not os.path.isfile(db):
             return []
-        seen = {}
+        seen, sizes = {}, {}
         try:
             con = _ro(db)
             try:
@@ -535,11 +535,20 @@ class OpenCodeSource(Source):
                         if isinstance(sid, str) and sid not in seen and \
                                 isinstance(ended, (int, float)):
                             seen[sid] = float(ended) / 1000.0
+                # The bytes a session's rows hold, so the size cap applies to a database
+                # session as it does to a log file; one query per table, not per session.
+                for table in ("session_message", "message", "part"):
+                    if table in tables:
+                        for r in con.execute(f"SELECT session_id, sum(length(data)) AS n FROM "
+                                             f"{table} GROUP BY session_id").fetchall():
+                            if isinstance(r["session_id"], str):
+                                sizes[r["session_id"]] = sizes.get(r["session_id"], 0) + \
+                                    int(r["n"] or 0)
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
             return []
-        return [{"id": sid, "path": _db_ref(db, sid), "mtime": mtime, "size": 0}
+        return [{"id": sid, "path": _db_ref(db, sid), "mtime": mtime, "size": sizes.get(sid, 0)}
                 for sid, mtime in sorted(seen.items(), key=lambda kv: (kv[1], kv[0]))]
 
     def head(self, path):
