@@ -485,37 +485,62 @@ class HermesSource(Source):
 # ---- opencode --------------------------------------------------------------------------------
 class OpenCodeSource(Source):
     """Rows of opencode's `opencode.db`, read only: a session's messages and parts are written
-    out as the export `trace.opencode` reads, so no `opencode` process is needed."""
+    out as the export `trace.opencode` reads, so no `opencode` process is needed.
+
+    Two layouts coexist (2.2.x): `session` / `message` / `part`, each message's `data` an
+    `{info}` record and its parts rows of their own; and `session_v2` / `session_message` /
+    `session_part`, where a message's kind is the `type` column and its `data` is the flat
+    export shape (`text` for a prompt; `content` with text and tool entries for an answer). A
+    database holds both tables during the move, with the earlier sessions in both; such a
+    session is read once, from the newer table."""
     name, label = "opencode", "opencode"
+    _SESSION_TABLES = ("session_v2", "session")
 
     def _db(self, env):
         data = _base(env, "XDG_DATA_HOME", ".local", "share")
         return os.path.join(data, "opencode", "opencode.db") if data else None
 
+    @staticmethod
+    def _tables(con):
+        return {r["name"] for r in
+                con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+
+    def _session_row(self, con, sid):
+        """(table, row) of the session, from `session_v2` first; (None, None) when absent."""
+        tables = self._tables(con)
+        for table in self._SESSION_TABLES:
+            if table in tables:
+                row = con.execute(f"SELECT id, directory, time_created FROM {table} "
+                                  "WHERE id = ?", (sid,)).fetchone()
+                if row:
+                    return table, row
+        return None, None
+
     def logs(self, env, extra_dirs=()):
         db = self._db(env)
         if not db or not os.path.isfile(db):
             return []
+        seen = {}
         try:
             con = _ro(db)
             try:
-                rows = con.execute("SELECT id, time_created, time_updated FROM session WHERE "
-                                   "parent_id IS NULL ORDER BY time_created").fetchall()
+                tables = self._tables(con)
+                for table in self._SESSION_TABLES:
+                    if table not in tables:
+                        continue
+                    rows = con.execute(f"SELECT id, time_created, time_updated FROM {table} "
+                                       "WHERE parent_id IS NULL ORDER BY time_created").fetchall()
+                    for r in rows:
+                        sid, ended = r["id"], r["time_updated"] or r["time_created"]
+                        if isinstance(sid, str) and sid not in seen and \
+                                isinstance(ended, (int, float)):
+                            seen[sid] = float(ended) / 1000.0
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
             return []
-        out = []
-        for r in rows:
-            sid = r["id"]
-            if not isinstance(sid, str):
-                continue
-            ended = r["time_updated"] or r["time_created"]
-            if not isinstance(ended, (int, float)):
-                continue
-            out.append({"id": sid, "path": _db_ref(db, sid), "mtime": float(ended) / 1000.0,
-                        "size": 0})
-        return out
+        return [{"id": sid, "path": _db_ref(db, sid), "mtime": mtime, "size": 0}
+                for sid, mtime in sorted(seen.items(), key=lambda kv: (kv[1], kv[0]))]
 
     def head(self, path):
         db, sid = _split_ref(path)
@@ -524,8 +549,7 @@ class OpenCodeSource(Source):
         try:
             con = _ro(db)
             try:
-                row = con.execute("SELECT id, directory, time_created FROM session WHERE id = ?",
-                                  (sid,)).fetchone()
+                _, row = self._session_row(con, sid)
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
@@ -546,36 +570,15 @@ class OpenCodeSource(Source):
         try:
             con = _ro(db)
             try:
-                info = con.execute("SELECT id, directory FROM session WHERE id = ?",
-                                   (sid,)).fetchone()
+                table, info = self._session_row(con, sid)
                 if not info:
                     return None
-                msgs = con.execute("SELECT id, data FROM message WHERE session_id = ? ORDER BY "
-                                   "time_created, id", (sid,)).fetchall()
-                parts = con.execute("SELECT message_id, data FROM part WHERE session_id = ? "
-                                    "ORDER BY time_created, id", (sid,)).fetchall()
+                messages = (self._v2_messages(con, sid, "session_part" in self._tables(con))
+                            if table == "session_v2" else self._v1_messages(con, sid))
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
             return None
-        by_msg = {}
-        for p in parts:
-            try:
-                d = json.loads(p["data"])
-            except (TypeError, ValueError):
-                continue
-            if isinstance(d, dict):
-                by_msg.setdefault(p["message_id"], []).append(d)
-        messages = []
-        for m in msgs:
-            try:
-                d = json.loads(m["data"])
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(d, dict):
-                continue
-            d = dict(d, id=m["id"])
-            messages.append({"info": d, "parts": by_msg.get(m["id"], [])})
         out = os.path.join(workdir, f"opencode-{sid}.json")
         try:
             with open(out, "w", encoding="utf-8") as fh:
@@ -585,21 +588,72 @@ class OpenCodeSource(Source):
             return None
         return out
 
+    @staticmethod
+    def _json_rows(rows, key="data"):
+        for r in rows:
+            try:
+                d = json.loads(r[key])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(d, dict):
+                yield r, d
+
+    def _v1_messages(self, con, sid):
+        """`message` / `part` rows as `{info, parts}` messages."""
+        msgs = con.execute("SELECT id, data FROM message WHERE session_id = ? ORDER BY "
+                           "time_created, id", (sid,)).fetchall()
+        parts = con.execute("SELECT message_id, data FROM part WHERE session_id = ? "
+                            "ORDER BY time_created, id", (sid,)).fetchall()
+        by_msg = {}
+        for p, d in self._json_rows(parts):
+            by_msg.setdefault(p["message_id"], []).append(d)
+        return [{"info": dict(d, id=m["id"]), "parts": by_msg.get(m["id"], [])}
+                for m, d in self._json_rows(msgs)]
+
+    def _v2_messages(self, con, sid, has_parts):
+        """`session_message` rows as the flat export shape (`{id, type, ...}`); parts filed in
+        `session_part` (unused by 2.2.x, which embeds them in `content`) are appended there."""
+        msgs = con.execute("SELECT id, type, data FROM session_message WHERE session_id = ? "
+                           "ORDER BY seq, time_created, id", (sid,)).fetchall()
+        by_msg = {}
+        if has_parts:
+            parts = con.execute("SELECT message_id, data FROM session_part WHERE session_id = ? "
+                                "ORDER BY message_id, ordinal", (sid,)).fetchall()
+            for p, d in self._json_rows(parts):
+                by_msg.setdefault(p["message_id"], []).append(d)
+        out = []
+        for m, d in self._json_rows(msgs):
+            msg = dict(d, id=m["id"], type=m["type"])
+            if by_msg.get(m["id"]) and not msg.get("content"):
+                msg["content"] = by_msg[m["id"]]
+            out.append(msg)
+        return out
+
     def prompt_count(self, path):
         """From the export, or, for a row reference, counted in the database: the session's
-        `user` messages that carry a text part."""
+        `user` messages that carry text."""
         db, sid = _split_ref(path)
         if not db:
             return _opencode.opencode_prompt_count(path)
         try:
             con = _ro(db)
             try:
-                row = con.execute(
-                    "SELECT count(DISTINCT m.id) AS n FROM message m JOIN part p ON "
-                    "p.message_id = m.id WHERE m.session_id = ? AND "
-                    "json_extract(m.data, '$.role') = 'user' AND "
-                    "json_extract(p.data, '$.type') = 'text' AND "
-                    "trim(coalesce(json_extract(p.data, '$.text'), '')) != ''", (sid,)).fetchone()
+                table, _ = self._session_row(con, sid)
+                if table == "session_v2":
+                    row = con.execute(
+                        "SELECT count(*) AS n FROM session_message WHERE session_id = ? AND "
+                        "type = 'user' AND trim(coalesce(json_extract(data, '$.text'), '')) != ''",
+                        (sid,)).fetchone()
+                elif table == "session":
+                    row = con.execute(
+                        "SELECT count(DISTINCT m.id) AS n FROM message m JOIN part p ON "
+                        "p.message_id = m.id WHERE m.session_id = ? AND "
+                        "json_extract(m.data, '$.role') = 'user' AND "
+                        "json_extract(p.data, '$.type') = 'text' AND "
+                        "trim(coalesce(json_extract(p.data, '$.text'), '')) != ''",
+                        (sid,)).fetchone()
+                else:
+                    row = None
             finally:
                 con.close()
         except (sqlite3.Error, OSError):

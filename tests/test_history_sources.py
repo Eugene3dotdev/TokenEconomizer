@@ -229,6 +229,58 @@ def hermes_db(home, sessions):
     return str(db)
 
 
+def opencode_v2_db(home, sessions, keep=False):
+    """`opencode.db` in the 2.2.x layout (`session_v2`, `session_message` with the kind in its
+    `type` column and the flat export shape in `data`, an empty `session_part`); `sessions` is
+    [(sid, cwd, age_s)]. With `keep`, the tables are added to an existing file."""
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db))
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS session_v2 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+            parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, version TEXT NOT NULL,
+            time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+            type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS session_part (message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL, type TEXT NOT NULL, call_id TEXT, time_created INTEGER
+            NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
+            PRIMARY KEY (message_id, ordinal));
+    """)
+    for sid, cwd, age_s in sessions:
+        end = int((time.time() - age_s) * 1000)
+        con.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?)",
+                    (sid, "p", None, "s", cwd, "2.2.6", end - 300000, end))
+        con.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                    (f"{sid}_u", sid, "user", 1, end - 300000, end - 300000,
+                     json.dumps({"files": [], "text": "fix the tests",
+                                 "time": {"created": end - 300000}})))
+        content = []
+        for n, (name, args, out, failed) in enumerate(trap_calls(cwd, 0)):
+            state = {"status": "error" if failed else "completed", "input": args}
+            if failed:
+                state["error"] = {"message": out, "type": "unknown"}
+            else:
+                state["metadata"] = {"exit": 0, "status": "completed", "truncated": False}
+                state["content"] = [{"type": "text", "text": out}]
+            content.append({"type": "tool", "id": f"c{n}", "name": "bash", "executed": True,
+                            "state": state, "time": {"created": end - 100000 + n}})
+        con.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                    (f"{sid}_a", sid, "assistant", 2, end - 200000, end, json.dumps(
+                        {"agent": "build", "model": {"id": "m", "providerID": "p"},
+                         "content": content, "cost": 0, "finish": "stop",
+                         "tokens": {"input": 1, "output": 1, "reasoning": 0,
+                                    "cache": {"read": 0, "write": 0}},
+                         "time": {"created": end - 200000, "completed": end}})))
+        con.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                    (f"{sid}_i", sid, "idle", 3, end, end,
+                     json.dumps({"outcome": "succeeded", "time": {"created": end}})))
+    con.commit()
+    con.close()
+    return str(db)
+
+
 def opencode_db(home, sessions):
     """`opencode.db` with the tables the reader uses; `sessions` is [(sid, cwd, age_s)]."""
     db = home / ".local" / "share" / "opencode" / "opencode.db"
@@ -329,6 +381,31 @@ def test_every_source_lists_its_log_reads_its_head_and_writes_a_trace_the_mechan
     assert [ok for _, _, _, ok in shell] == [False, True]
     assert "command not found" in shell[0][2]
     assert isinstance(src.usage(got), dict)
+
+
+def test_opencode_2_2_sessions_are_read_from_session_v2_and_a_moved_one_only_once(
+        env, home, repo, tmp_path):
+    """2.2.x keeps new sessions in `session_v2` / `session_message` (kind in a column, the flat
+    export shape in `data`) and leaves earlier ones in `session` too; both layouts are read, a
+    session present in both once, and the trace carries the tool calls."""
+    opencode_db(home, [("ses_old", repo, 7200), ("ses_both", repo, 5400)])
+    opencode_v2_db(home, [("ses_both", repo, 5400), ("ses_new", repo, 3600)], keep=True)
+    src = sources.SOURCES["opencode"]
+    logs = src.logs(env)
+    assert [x["id"] for x in logs] == ["ses_old", "ses_both", "ses_new"]
+    new = [x for x in logs if x["id"] == "ses_new"][0]
+    head = src.head(new["path"])
+    assert head["session_id"] == "ses_new" and head["cwd"] == repo
+    assert src.prompt_count(new["path"]) == 1
+    work = tmp_path / "work"
+    work.mkdir()
+    got = src.materialize(new["path"], str(work))
+    tr = src.to_trace(got, str(work))
+    shell = [c for c in trace.load_trajectory(tr) if isinstance(c[1], dict) and c[1].get("command")]
+    assert [observe.unwrap(a["command"]) for n, a, _, _ in shell] == [
+        "pytest -q tests/test_a.py", "python -m pytest -q tests/test_a.py"]
+    assert [ok for _, _, _, ok in shell] == [False, True]
+    assert src.usage(got)["output_tokens"] == 1
 
 
 def test_a_scripted_codex_run_and_a_one_shot_hermes_session_are_headless(env, home, repo):
