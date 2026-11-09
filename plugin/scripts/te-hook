@@ -21,6 +21,21 @@ outside_windowsapps() {
   done
   IFS=$_ifs; set +f; return 1
 }
+# The first $1 on PATH that starts ($1 itself when it is a path). A version manager's shim whose
+# interpreter was removed still answers `command -v`, and would otherwise end the search.
+first_that_runs() {
+  case $1 in
+    */*) [ -x "$1" ] && "$1" -c "" </dev/null >/dev/null 2>&1 && printf '%s\n' "$1"; return ;;
+  esac
+  set -f; _ifs=$IFS; IFS=:
+  for _d in $PATH; do
+    _f=${_d:-.}/$1
+    if [ -f "$_f" ] && [ -x "$_f" ] && "$_f" -c "" </dev/null >/dev/null 2>&1; then
+      IFS=$_ifs; set +f; printf '%s\n' "$_f"; return 0
+    fi
+  done
+  IFS=$_ifs; set +f; return 1
+}
 if [ "${OS:-}" = Windows_NT ]; then
   for py in "${TE_PYTHON:-}" python3 python py; do
     [ -n "$py" ] && p=$(command -v "$py" 2>/dev/null) || continue
@@ -36,8 +51,8 @@ if [ "${OS:-}" = Windows_NT ]; then
   done
 else
   for py in "${TE_PYTHON:-}" python3 python; do
-    [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
-    exec "$py" "$dir/te_bootstrap.py" hook "$@"
+    [ -n "$py" ] && p=$(first_that_runs "$py") || continue
+    exec "$p" "$dir/te_bootstrap.py" hook "$@"
   done
 fi
 # Drain stdin with a builtin (no `cat` when PATH is empty), then answer "no change".
