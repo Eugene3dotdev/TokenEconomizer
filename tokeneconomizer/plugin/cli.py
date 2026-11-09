@@ -676,6 +676,12 @@ def cmd_history(args):
     if args.all:
         if not args.dry_run and _refuse_unwritable(ctx.root):
             return 1
+        if args.detach:
+            # An installer runs this: the read of every repository is not its to wait for.
+            ctx.spawn(["history", "import", "--all", "--auto"], "history-all.log")
+            print(f"reading the agents' history in the background; its log is "
+                  f"{ctx.store.path('history-all.log')}")
+            return 0
         res = history.run_all(ctx.root, ctx.env, ctx.config, dry_run=args.dry_run,
                               log=lambda line: print(line, flush=True))
         print(f"{res['repos']} repositor{'y' if res['repos'] == 1 else 'ies'} in the agents' "
@@ -971,6 +977,8 @@ def build_parser():
                    help="every repository the agents' history names, into the store of each "
                         "agent that ran there")
     p.add_argument("--status", action="store_true", help="what the import did here")
+    p.add_argument("--detach", action="store_true",
+                   help="with --all: run in the background and return at once")
     p.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_history)
     p = add("repomap")
