@@ -804,10 +804,10 @@ def test_where_claude_code_keeps_its_logs(tmp_path):
     (proj / "s1" / "subagents").mkdir(parents=True)
     for p in (proj / "s1.jsonl", proj / "agent-a.jsonl", proj / "s1" / "subagents" / "x.jsonl"):
         p.write_text("{}\n")
-    logs = hosts.ClaudeCode().history({"CLAUDE_CONFIG_DIR": str(tmp_path / "none")},
-                                      [str(tmp_path)])
-    assert [(x["session_id"], x["folder"]) for x in logs] == [("s1", "-w")]
-    assert hosts.Codex().history({}) == []
+    logs = trace.SOURCES["claude"].logs({"CLAUDE_CONFIG_DIR": str(tmp_path / "none")},
+                                        [str(tmp_path)])
+    assert [(x["id"], x["folder"]) for x in logs] == [("s1", "-w")]
+    assert trace.SOURCES["codex"].logs({}) == []
 
 
 def test_te_history_dry_run_writes_nothing(env, repo, claude_home, monkeypatch, capsys):
