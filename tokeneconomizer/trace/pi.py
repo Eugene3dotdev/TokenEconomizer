@@ -21,11 +21,10 @@ def _pi_entries(path):
 
 
 def pi_session_header(path):
-    """The `session` header line ({id, cwd, version, ...}), {} if absent."""
-    for ev in _pi_entries(path)[:1]:
-        if ev.get("type") == "session":
-            return ev
-    return {}
+    """The `session` header line ({id, cwd, version, ...}), {} if absent. Reads the first
+    record only: a head is asked of every log on the machine."""
+    ev = next(records(path), None)
+    return ev if isinstance(ev, dict) and ev.get("type") == "session" else {}
 
 
 def pi_active_branch(entries):

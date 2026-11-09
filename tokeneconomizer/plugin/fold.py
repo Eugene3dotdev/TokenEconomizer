@@ -21,6 +21,7 @@ it did not earn.
 """
 import os
 import shutil
+import sys
 import tempfile
 import time
 
@@ -438,7 +439,18 @@ def fold_session(ctx, session_id, transcript_path=None):
         return fold_locked(ctx, session_id, transcript_path)
 
 
-def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None, source=None):
+def _ended_fallback(path, default):
+    """When a session recorded no end: its log's modification time, else `default`."""
+    try:
+        if isinstance(path, str) and "#" not in path:
+            return os.path.getmtime(path)
+    except OSError:
+        pass
+    return default
+
+
+def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None, source=None,
+                final=True):
     """`fold_session` for a caller that holds the "fold" lock (the history import holds it for
     its whole run). With `imported`, the session is one from an agent's history, read once
     and only to learn from (see `history`): it is scored against the tools its own log shows,
@@ -447,7 +459,9 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
     never recorded. `source` is the `trace.sources.Source` the log came from; one other than
     this agent's own (a foreign session) is folded for micro-skills only, and its record names
     its `origin`. `session_id` is the `folded.json` key (`<source>:<id>` for a foreign one).
-    Whatever the session, the fold raises the store's watermark to its end."""
+    Whatever the session, the fold raises the store's watermark to its end. An imported log
+    that cannot be read now is, with `final` False, left for a later run (`{"retry": True}`,
+    nothing written); with `final` True it is folded as unreadable."""
     sess_name = os.path.join("sessions", f"{session_id}.json")
     folded = ctx.store.read("folded.json") or {}
     if session_id in folded:
@@ -472,11 +486,23 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
         record["origin"] = source.name
     workdir = tempfile.mkdtemp(prefix="te-fold-")
     try:
-        if source is not None and transcript:
-            transcript = source.materialize(transcript, workdir)
-            trace_path = source.to_trace(transcript, workdir) if transcript else None
-        else:
-            trace_path = ctx.host.mechanism_trace(transcript, workdir) if transcript else None
+        try:
+            if source is not None and transcript:
+                transcript = source.materialize(transcript, workdir)
+                trace_path = source.to_trace(transcript, workdir) if transcript else None
+            else:
+                trace_path = (ctx.host.mechanism_trace(transcript, workdir) if transcript
+                              else None)
+        except Exception:
+            # A reader's failure on another agent's log is that log's problem, not this
+            # fold's: the session counts as unreadable (and is retried where `final` is off).
+            if source is None:
+                raise
+            from . import history
+            history._record_error(ctx.root)
+            transcript, trace_path = None, None
+        if not trace_path and source is not None and not final:
+            return {"error": "transcript unreadable", "retry": True}
         try:
             if not transcript:
                 prompts = None
@@ -484,7 +510,9 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                 prompts = source.prompt_count(transcript)
             else:
                 prompts = ctx.host.prompt_count(transcript)
-        except (OSError, ValueError):
+        except Exception:
+            if source is None and not isinstance(sys.exc_info()[1], (OSError, ValueError)):
+                raise
             prompts = None
         record["prompts"] = prompts
         if not trace_path:
@@ -510,8 +538,14 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                 schedule_pending(ctx)
             if not imported:
                 ctx.host.settle(transcript)
-            usage = (source.usage(transcript) if source is not None
-                     else ctx.host.session_usage(transcript))
+            try:
+                usage = (source.usage(transcript) if source is not None
+                         else ctx.host.session_usage(transcript))
+            except Exception:
+                if source is None:
+                    raise
+                usage = {}
+            usage = usage if isinstance(usage, dict) else {}
             eff, priced_by = accounting.effective(usage)
             record.update({k: usage.get(k) for k in (
                 "model", "requests", "input_tokens", "cache_read_input_tokens",
@@ -542,7 +576,11 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             sess["folded"] = True
             ctx.store.write(sess_name, sess)
         from . import history
-        history.advance(ctx, ended if ended is not None else record["folded_at"])
+        # A session that recorded no end (killed, or read from a log without one) raises the
+        # watermark to its log's modification time, not to now: later sessions of other agents
+        # must not count as behind because of it.
+        history.advance(ctx, ended if ended is not None else _ended_fallback(
+            transcript_path if source is not None else transcript, record["folded_at"]))
         return record
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

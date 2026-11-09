@@ -40,6 +40,7 @@ if [ "${OS:-}" = Windows_NT ]; then
   for py in "${TE_PYTHON:-}" python3 python py; do
     [ -n "$py" ] && p=$(command -v "$py" 2>/dev/null) || continue
     case $p in *WindowsApps*) p=$(outside_windowsapps "$py") || continue ;; esac
+    "$p" -c "" </dev/null >/dev/null 2>&1 || continue
     [ "$py" = py ] && exec "$p" -3 "$dir/te_bootstrap.py" hook "$@"
     exec "$p" "$dir/te_bootstrap.py" hook "$@"
   done

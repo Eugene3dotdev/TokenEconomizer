@@ -93,6 +93,7 @@ HEARTBEAT_STALE_S = 900            # a running import this quiet has died
 MAX_BYTES = 256 * 1024 * 1024      # a log larger than this is not read
 HISTORY_LOCK_S = 1.0               # a session start's wait for `history.json` (then next time)
 MAX_ATTEMPTS = 2                   # runs that died on one session before it is left out
+MAX_RETRIES = 3                    # runs that could not read one session before it is folded as such
 CATCHUP_EVERY_S = 600              # how often a session start looks for other agents' sessions
 CATCHUP_PER_FOLD = 20              # earlier sessions a live fold folds first, at most
 FOLDER_MATCHED = ("claude", "droid")   # agents that file logs under a folder named for the cwd
@@ -212,6 +213,10 @@ def _key_for(ctx, source, sid):
     return sid if source.name == ctx.host.name else f"{source.name}:{sid}"
 
 
+_EMPTY_HEAD = {"session_id": None, "cwd": None, "started": None, "headless": False,
+               "folder": None}
+
+
 class _Heads:
     """The head cache: `{path: {"mtime", "size", "head"}}` in `<root>/history-cache.json`.
     Read once per process, written back once, best effort; a cache that cannot be read or
@@ -235,13 +240,18 @@ class _Heads:
         return hit
 
     def head(self, source, log):
+        """The log's head, read once per (path, mtime, size). A reader that could not answer
+        (an exception, or None: a locked database, a file mid-write) is not cached and is asked
+        again next time; an empty head stands in for this pass."""
         hit = self._entry(log)
         if not isinstance(hit.get("head"), dict):
             try:
-                hit["head"] = source.head(log["path"])
+                head = source.head(log["path"])
             except Exception:
-                hit["head"] = {"session_id": None, "cwd": None, "started": None,
-                               "headless": False, "folder": None}
+                head = None
+            if not isinstance(head, dict):
+                return dict(_EMPTY_HEAD)
+            hit["head"] = head
             self.dirty = True
         return hit["head"]
 
@@ -249,9 +259,10 @@ class _Heads:
         hit = self._entry(log)
         if "prompts" not in hit:
             try:
-                hit["prompts"] = source.prompt_count(log["path"])
+                n = source.prompt_count(log["path"])
             except Exception:
-                hit["prompts"] = 0
+                return None                      # unknown this pass; asked again next time
+            hit["prompts"] = n
             self.dirty = True
         return hit["prompts"]
 
@@ -283,18 +294,27 @@ def scan(ctx, heads):
     return out
 
 
-def plan(ctx, now=None):
+def plan(ctx, now=None, heads=None, cache=None):
     """What an import would fold here, and why the rest is left out; reads, never writes
-    (but the head cache).
+    (but the head cache). `heads` and `cache` (repository identities by directory) may be
+    shared by a caller that plans several stores of one host.
 
-    Returns {"sessions": [{"id", "key", "source", "path", "started", "ended"}] oldest first,
-    "skipped": {why: n}, "over_limit": n}."""
+    The newest `history_max_sessions` are taken, this agent's own and the other agents'
+    counted separately, so that foreign sessions never crowd out the own ones that alone feed
+    tool pruning and the envelope. A session an earlier run could not read (`retry` in
+    `history.json`) is planned again although the watermark has passed it.
+
+    Returns {"sessions": [{"id", "key", "source", "path", "size", "started", "ended"}] oldest
+    first, "skipped": {why: n}, "over_limit": n}."""
     now = time.time() if now is None else now
     cfg = ctx.config
     folded = ctx.store.read("folded.json") or {}
     through = watermark(ctx)
-    skipped, found, cache = {}, [], {}
-    heads = _Heads(ctx.root)
+    state = read_state(ctx) or {}
+    retrying = state.get("retry") if isinstance(state.get("retry"), dict) else {}
+    skipped, found = {}, []
+    cache = {} if cache is None else cache
+    heads = _Heads(ctx.root) if heads is None else heads
 
     def skip(why):
         skipped[why] = skipped.get(why, 0) + 1
@@ -319,7 +339,7 @@ def plan(ctx, now=None):
         elif (source.name == ctx.host.name
               and os.path.exists(ctx.store.path("sessions", f"{sid}.json"))):
             skip("recorded_live")
-        elif through is not None and mtime <= through:
+        elif through is not None and mtime <= through and key not in retrying:
             skip("behind")
         else:
             prompts = heads.prompts(source, log)
@@ -329,11 +349,18 @@ def plan(ctx, now=None):
                 skip("headless")
             else:
                 found.append({"id": sid, "key": key, "source": source.name, "path": log["path"],
-                              "started": head.get("started") or mtime, "ended": mtime})
+                              "size": size, "started": head.get("started") or mtime,
+                              "ended": mtime})
     heads.save(heads.present)
-    found.sort(key=lambda s: (s["ended"], s["started"], s["source"], s["id"]))
-    over = max(0, len(found) - cfg.history_max_sessions)
-    return {"sessions": found[over:], "skipped": skipped, "over_limit": over}
+    order = (lambda s: (s["ended"], s["started"], s["source"], s["id"]))
+    found.sort(key=order)
+    cap = max(0, int(cfg.history_max_sessions))
+    own = [s for s in found if s["source"] == ctx.host.name]
+    foreign = [s for s in found if s["source"] != ctx.host.name]
+    over = max(0, len(own) - cap) + max(0, len(foreign) - cap)
+    kept = own[max(0, len(own) - cap):] + foreign[max(0, len(foreign) - cap):]
+    kept.sort(key=order)
+    return {"sessions": kept, "skipped": skipped, "over_limit": over}
 
 
 def _item_source(item):
@@ -349,9 +376,13 @@ def _still_eligible(ctx, item):
     sid = trace.claude_safe_session_id(item.get("id"))
     source = _item_source(item)
     path = item.get("path")
-    if sid is None or source is None or not isinstance(path, str) or sid not in path:
+    if sid is None or source is None or not isinstance(path, str):
         return "unsafe_id"
-    key = item.get("key") or _key_for(ctx, source, sid)
+    # A database row is `<db>#<id>`: the fragment, which names the export file, must be this
+    # very id; a file must at least carry the id in its path.
+    if ("#" in path and path.rpartition("#")[2] != sid) or ("#" not in path and sid not in path):
+        return "unsafe_id"
+    key = _key_for(ctx, source, sid)
     if key in (ctx.store.read("folded.json") or {}):
         return "already_folded"
     if source.name == ctx.host.name and os.path.exists(ctx.store.path("sessions", f"{sid}.json")):
@@ -362,6 +393,8 @@ def _still_eligible(ctx, item):
                 return "too_large"
         except OSError:
             return "gone"
+    elif _num(item.get("size")) > MAX_BYTES:
+        return "too_large"
     return None
 
 
@@ -443,7 +476,7 @@ def _say(log, text):
             pass
 
 
-def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None):
+def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None, heads=None, cache=None):
     """Import this repository's earlier and foreign sessions into this store, holding the fold
     lock throughout.
 
@@ -469,7 +502,7 @@ def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None):
             _save(ctx, doc)
             return {"state": "stopped", "reason": doc["reason"]}
         try:
-            return _run_locked(ctx, doc, resuming, now, budget_s, log)
+            return _run_locked(ctx, doc, resuming, now, budget_s, log, heads, cache)
         except Exception:
             # Not left `running`: live folds would wait for a run that fails again each time.
             _record_error(ctx.root)
@@ -480,17 +513,18 @@ def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None):
             return {"state": "error", "reason": doc["reason"]}
 
 
-def _run_locked(ctx, doc, resuming, now, budget_s, log):
+def _run_locked(ctx, doc, resuming, now, budget_s, log, heads=None, cache=None):
     """`run` once it may go on, under the fold lock: plan (or take up the saved plan), fold
     each session in order, save the place after each, then fold the sessions left pending."""
     before = int(_num(doc.get("imported")))
     if not resuming:
         # Live folds wait from now on, while the plan is made, not only once it is. What
-        # earlier runs read (`imported`, `origins`) and announced stands; the plan is new.
+        # earlier runs read (`imported`, `origins`, `retry`) and announced stands; the plan is
+        # new.
         base = {k: v for k, v in doc.items()
                 if k not in ("plan", "next", "attempt", "skipped", "over_limit", "planned")}
         _save(ctx, dict(base, state="running", heartbeat=time.time()))
-        p = plan(ctx, now)
+        p = plan(ctx, now, heads=heads, cache=cache)
         doc = dict(base, state="running", plan=p["sessions"], next=0, skipped=p["skipped"],
                    over_limit=p["over_limit"], planned=len(p["sessions"]), started=time.time())
         doc.setdefault("imported", 0)
@@ -535,12 +569,29 @@ def _run_locked(ctx, doc, resuming, now, budget_s, log):
             "left": len(items) - i, "reason": None}
 
 
-def _fold_item(ctx, item, source):
+def _fold_item(ctx, item, source, final=False):
     """Fold one planned session into this store, as an imported one of `source`; the ledger
-    record, or None when it was folded already."""
-    key = item.get("key") or _key_for(ctx, source, item["id"])
+    record, None when it was folded already, or `{"retry": True, ...}` when its log could not
+    be read this time and `final` is False (nothing written: it is planned again)."""
+    key = _key_for(ctx, source, item["id"])
     return fold.fold_locked(ctx, key, item["path"], imported=True,
-                            span=(item.get("started"), item.get("ended")), source=source)
+                            span=(item.get("started"), item.get("ended")), source=source,
+                            final=final)
+
+
+def _retries(doc, key, n=None):
+    """The retry count of `key` in a history doc; with `n`, set it (0 removes it)."""
+    retry = doc.get("retry") if isinstance(doc.get("retry"), dict) else {}
+    if n is not None:
+        if n > 0:
+            retry[key] = n
+        else:
+            retry.pop(key, None)
+        if retry:
+            doc["retry"] = retry
+        else:
+            doc.pop("retry", None)
+    return int(_num(retry.get(key)))
 
 
 def _import_one(ctx, doc, item, skipped, origins, log):
@@ -554,7 +605,7 @@ def _import_one(ctx, doc, item, skipped, origins, log):
     att = doc.get("attempt") if isinstance(doc.get("attempt"), dict) else {}
     tries = int(_num(att.get("n"))) if sid is not None and att.get("id") == sid else 0
     why = _still_eligible(ctx, item)
-    key = (item.get("key") or _key_for(ctx, source, sid)) if source and sid else None
+    key = _key_for(ctx, source, sid) if source and sid else None
     if why == "already_folded" and key and _folded_by_import(ctx.store, key):
         # This import folded it, and its process died before it saved its place.
         doc["imported"] = int(_num(doc.get("imported"))) + 1
@@ -572,14 +623,22 @@ def _import_one(ctx, doc, item, skipped, origins, log):
         return
     doc["attempt"] = {"id": sid, "n": tries + 1}
     _save(ctx, doc)
+    # A log that could not be read (a locked database, a file mid-write) is planned again at
+    # the next run, `MAX_RETRIES` times, before it is folded as unreadable for good.
+    retried = _retries(doc, key)
     try:
-        rec = _fold_item(ctx, item, source)
-        if rec is not None and not rec.get("error"):
+        rec = _fold_item(ctx, item, source, final=retried >= MAX_RETRIES)
+        if rec is not None and rec.get("retry"):
+            _retries(doc, key, retried + 1)
+            skipped["retry_later"] = skipped.get("retry_later", 0) + 1
+        elif rec is not None and not rec.get("error"):
+            _retries(doc, key, 0)
             doc["imported"] = int(_num(doc.get("imported"))) + 1
             origins[source.name] = int(origins.get(source.name, 0)) + 1
             _replay(ctx, item, source)
             _say(log, f"read {key}")
         elif rec is not None:
+            _retries(doc, key, 0)
             skipped["unreadable"] = skipped.get("unreadable", 0) + 1
     except Exception:
         _record_error(ctx.root)
@@ -615,26 +674,38 @@ def catch_up(ctx, before, limit=CATCHUP_PER_FOLD):
         return 0
     items = [s for s in p["sessions"] if s["ended"] < _num(before, float("inf"))][:limit]
     done = []
+    state = read_state(ctx) or {}
+    retry_later, settled = [], []
     for item in items:
         source = _item_source(item)
         if source is None:
             continue
+        key = _key_for(ctx, source, item["id"])
         try:
-            rec = _fold_item(ctx, item, source)
+            rec = _fold_item(ctx, item, source, final=_retries(state, key) >= MAX_RETRIES)
         except Exception:
             _record_error(ctx.root)
             continue
-        if rec is not None and not rec.get("error"):
-            done.append(item)
-            _replay(ctx, item, source)
-    if done:
+        if rec is not None and rec.get("retry"):
+            retry_later.append(key)
+        elif rec is not None:
+            settled.append(key)
+            if not rec.get("error"):
+                done.append(item)
+                _replay(ctx, item, source)
+    if done or retry_later or settled:
         def count(doc):
             origins = doc.get("origins") if isinstance(doc.get("origins"), dict) else {}
             for item in done:
                 origins[item["source"]] = int(origins.get(item["source"], 0)) + 1
+            for key in retry_later:
+                _retries(doc, key, _retries(doc, key) + 1)
+            for key in settled:
+                _retries(doc, key, 0)
             doc["origins"] = origins
             doc["imported"] = int(_num(doc.get("imported"))) + len(done)
-            doc["noticed"] = False          # the next session start says what was read
+            if done:
+                doc["noticed"] = False      # the next session start says what was read
             doc.setdefault("state", "done")
             return None
         _update(ctx, count)
@@ -748,7 +819,7 @@ def describe(doc):
 
 
 # ---- every repository ------------------------------------------------------------------------
-def repositories(root, env, cfg):
+def repositories(root, env, cfg, heads=None):
     """Every repository the enabled sources' logs name, with the agents that ran there:
     {repo_key: {"repo": RepoId, "hosts": {name}, "newest": ended, "sessions": n}}. Logs whose
     directory is gone, or outside any checkout, are not placed."""
@@ -760,7 +831,7 @@ def repositories(root, env, cfg):
     ctx = _Ctx()
     ctx.root, ctx.env, ctx.config = root, env, cfg
     ctx.host = _hosts.HOSTS["claude"]()
-    heads = _Heads(root)
+    heads = _Heads(root) if heads is None else heads
     groups, ids = {}, {}
     entries = scan(ctx, heads)
     heads.save(heads.present)
@@ -793,7 +864,10 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
     from . import hosts as _hosts
     from .context import LiveContext
     build = build or (lambda host, cwd: LiveContext.build(host, cwd, env))
-    groups = repositories(root, env, cfg)
+    # One head cache and one identity cache for every store of the host: the logs are read
+    # once, not once per store.
+    heads, cache = _Heads(root), {}
+    groups = repositories(root, env, cfg, heads=heads)
     order = sorted(groups.values(), key=lambda g: -g["newest"])
     totals = {"repos": len(order), "stores": 0, "imported": 0, "dry_run": dry_run}
     for g in order:
@@ -801,7 +875,7 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
             totals["stores"] += 1
             ctx = build(_hosts.HOSTS[name](), g["repo"].root)
             if dry_run:
-                p = plan(ctx)
+                p = plan(ctx, heads=heads, cache=cache)
                 _say(log, f"{g['repo'].label} [{name}]: {len(p['sessions'])} session(s) would "
                           f"be read" + (f", left out: " + ", ".join(
                               f"{k} {v}" for k, v in sorted(p["skipped"].items()))
@@ -813,7 +887,9 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
                 continue
             # A saved plan (a run stopped by its budget) is kept and resumed; else a new one.
             _save(ctx, dict(doc, state="running", heartbeat=time.time()))
-            res = run(ctx, auto=True, log=log)
+            res = run(ctx, auto=True, log=log, heads=heads, cache=cache)
+            if res.get("state") == "busy":
+                _save(ctx, doc)             # not left `running` by a run that never began
             totals["imported"] += int(_num(res.get("read")))
             _say(log, f"{g['repo'].label} [{name}]: {res['state']}, {res.get('read', 0)} "
                       f"session(s) read")

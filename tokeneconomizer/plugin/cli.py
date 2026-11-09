@@ -674,6 +674,9 @@ def cmd_history(args):
         _print_history(ctx, history.summary(ctx))
         return 0
     if args.all:
+        if args.detach and args.dry_run:
+            print("--detach and --dry-run do not combine: a dry run prints what it would read")
+            return 1
         if not args.dry_run and _refuse_unwritable(ctx.root):
             return 1
         if args.detach:
@@ -713,6 +716,8 @@ def cmd_history(args):
             return 1
         history._save(ctx, dict(doc, state="running", heartbeat=time.time()))
     res = history.run(ctx, auto=args.auto, log=lambda line: print(line, flush=True))
+    if not args.auto and res["state"] == "busy":
+        history._save(ctx, doc)         # not left `running` by a run that never began
     if args.auto:
         return 0
     if res["state"] in ("refused", "skipped", "busy", "error", "stopped"):

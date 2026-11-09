@@ -453,6 +453,91 @@ def test_the_first_start_in_a_repository_reads_every_agents_sessions_oldest_firs
             "and Pi history.") in second["systemMessage"]
 
 
+def test_the_newest_cap_counts_own_and_foreign_sessions_separately(env, home, repo):
+    """Three of Claude Code's own sessions and three of Codex's, a cap of two: two of each are
+    planned, so foreign sessions never crowd out the own ones that alone feed tool pruning."""
+    ctx = ctx_for(env, repo)
+    for i in range(3):
+        _write("claude", home, repo, f"c-own-{i}", age_s=3600 + i)
+        codex_log(home, repo, f"0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b{i:02d}", i, age_s=3700 + i)
+    ctx.config.history_max_sessions = 2
+    p = history.plan(ctx)
+    by = {}
+    for s in p["sessions"]:
+        by[s["source"]] = by.get(s["source"], 0) + 1
+    assert by == {"claude": 2, "codex": 2} and p["over_limit"] == 2
+    assert [s["ended"] for s in p["sessions"]] == sorted(s["ended"] for s in p["sessions"])
+
+
+def test_a_log_that_cannot_be_read_now_is_planned_again_then_folded_as_unreadable(
+        env, home, repo, monkeypatch):
+    """Codex's log A fails to convert twice, then converts; log B, older, never converts. A is
+    read at the third run, although B's and later folds moved the watermark past it; B is
+    folded as unreadable at the fourth run, no earlier, and nothing is written for either
+    before that."""
+    ctx = ctx_for(env, repo)
+    a, b = "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3baa", "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3bbb"
+    codex_log(home, repo, a, 0, age_s=3600)
+    codex_log(home, repo, b, 1, age_s=7200)
+    src = sources.SOURCES["codex"]
+    real, calls = src.to_trace, {"a": 0}
+
+    def flaky(path, workdir):
+        if b in str(path):
+            return None
+        if a in str(path):
+            calls["a"] += 1
+            if calls["a"] <= 2:
+                return None
+        return real(path, workdir)
+    monkeypatch.setattr(src, "to_trace", flaky)
+    history.run(ctx)
+    assert ledger_ids(ctx.store) == [] and ctx.store.read("folded.json") in (None, {})
+    assert history.read_state(ctx)["retry"] == {f"codex:{a}": 1, f"codex:{b}": 1}
+    history.run(ctx)
+    assert history.read_state(ctx)["retry"] == {f"codex:{a}": 2, f"codex:{b}": 2}
+    history.run(ctx)
+    assert ledger_ids(ctx.store) == [f"codex:{a}"]
+    assert history.read_state(ctx)["retry"] == {f"codex:{b}": 3}
+    history.run(ctx)
+    folded = ctx.store.read("folded.json")
+    assert f"codex:{b}" in folded and "retry" not in history.read_state(ctx)
+    last = ctx.store.read_lines("ledger.jsonl")[-1]
+    assert last["session_id"] == f"codex:{b}" and last["error"] == "transcript unreadable"
+
+
+def test_a_head_the_reader_could_not_give_is_not_cached(env, tmp_path):
+    """A locked database or a file mid-write answers nothing this pass; the cache keeps no
+    entry for it, so the next pass asks again and gets the real head."""
+    class Flaky:
+        name = "flaky"
+        calls = 0
+
+        def head(self, path):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("locked")
+            if self.calls == 2:
+                return None
+            return {"session_id": "s", "cwd": "/w", "started": 1.0, "headless": False,
+                    "folder": None}
+    heads = history._Heads(str(tmp_path / "te"))
+    log = {"path": "/x/s.jsonl", "mtime": 1.0, "size": 1}
+    src = Flaky()
+    assert heads.head(src, log)["cwd"] is None and "head" not in heads.doc[log["path"]]
+    assert heads.head(src, log)["cwd"] is None and "head" not in heads.doc[log["path"]]
+    assert heads.head(src, log)["cwd"] == "/w" and heads.doc[log["path"]]["head"]["cwd"] == "/w"
+    assert heads.head(src, log)["cwd"] == "/w" and src.calls == 3
+
+
+def test_a_detached_dry_run_is_refused(env, tmp_path, monkeypatch, capsys):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all", "--dry-run",
+                     "--detach"]) == 1
+    assert "do not combine" in capsys.readouterr().out
+
+
 def test_a_live_fold_first_folds_the_other_agents_sessions_that_ended_before_it(
         env, home, repo, tmp_path):
     """Codex's session ends in a repository Claude Code has already learned in; Claude Code's

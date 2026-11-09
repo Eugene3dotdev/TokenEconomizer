@@ -25,6 +25,7 @@ other agent's store for the repository, and it has no store of its own.
 """
 import json
 import os
+import pathlib
 import re
 import sqlite3
 from urllib.parse import unquote
@@ -388,7 +389,10 @@ def _split_ref(path):
 
 
 def _ro(db):
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    """A read-only connection; the path goes through a URI, so it is quoted (`#`, `?`, `%`,
+    spaces, a Windows drive) rather than pasted in."""
+    con = sqlite3.connect(pathlib.Path(db).absolute().as_uri() + "?mode=ro", uri=True,
+                          timeout=5)
     con.row_factory = sqlite3.Row
     return con
 
@@ -441,7 +445,7 @@ class HermesSource(Source):
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
-            row = None
+            return None                          # could not read now: not cached, asked again
         if not row:
             return super().head(path)
         return {"session_id": row["id"], "cwd": row["cwd"] if isinstance(row["cwd"], str) and
@@ -562,7 +566,7 @@ class OpenCodeSource(Source):
             finally:
                 con.close()
         except (sqlite3.Error, OSError):
-            row = None
+            return None                          # could not read now: not cached, asked again
         if not row:
             return super().head(path)
         created = row["time_created"]

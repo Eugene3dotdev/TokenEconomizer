@@ -121,7 +121,7 @@ def _is_prompt(ev):
     """A `user` message the person gave: not injected by Droid, not a tool result."""
     if ev.get("type") != "message" or _injected(ev):
         return False
-    msg = ev.get("message") or {}
+    msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
     if msg.get("role") != "user":
         return False
     content = msg.get("content")
@@ -201,7 +201,7 @@ def droid_session_to_claude(path, out_path):
             continue
         if not isinstance(ev, dict) or ev.get("type") != "message":
             continue
-        msg = ev.get("message") or {}
+        msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
         role = msg.get("role")
         if role not in ("user", "assistant"):
             continue
@@ -246,7 +246,8 @@ def droid_session_usage(path):
             ev = json.loads(line)
         except ValueError:
             continue
-        m = (ev.get("message") or {}) if isinstance(ev, dict) else {}
+        m = ev.get("message") if isinstance(ev, dict) and isinstance(ev.get("message"), dict) \
+            else {}
         if isinstance(m.get("modelId"), str):
             model = m["modelId"]
             break
