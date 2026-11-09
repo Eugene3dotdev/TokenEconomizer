@@ -244,6 +244,18 @@ records every tool a session loads (without a model call), so that tool pruning 
 of them. Keep the marketplace path absolute, as above: the Copilot CLI reads a relative path such
 as `./TokenEconomizer` as the name of a GitHub repository.
 
+The plugin starts learning from the sessions your agents have already run. The first session
+start in a repository reads that repository's earlier sessions from every agent's logs on the
+machine, in the background, and says so at the next start. To read every repository at once,
+run this once after installing (it needs no agent running and makes no model call):
+
+```sh
+~/.tokeneconomizer/bin/te history import --all
+```
+
+`--dry-run` says what it would read. `te config set history_import=off --global` turns the
+reading of history off (see [Settings](#settings)).
+
 To update:
 
 | Agent | Update |
@@ -368,13 +380,17 @@ repository have been idle for *q* minutes (or, at the latest, a day after the li
 conversation resumed after its tools change must write its whole history to the prompt cache again
 instead of reading it, and after an idle hour that cache has expired anyway.
 
-On Claude Code, the plugin can also learn from a repository's earlier sessions, read from Claude
-Code's own logs oldest first and without any model call. This is off by default, and a
-repository's history is read only before the plugin has learned from any session there, so turn
-it on right after installing: with `config set history_import=on --global`, the first session in
-each repository reads that repository's earlier sessions in the background (see [Earlier
-sessions](plugin/README.md#earlier-sessions)). A deny list that rests on those earlier sessions
-waits for `toolprune apply`, even under `auto`.
+The plugin also learns from the sessions the agents' own logs already hold, oldest first and
+without any model call: this agent's sessions from before the plugin was installed, and every
+other agent's sessions in the same repository, before and after. Claude Code, Codex, the Copilot
+CLI, Pi, Grok Build, Hermes, opencode and Factory Droid are read. A fact about the repository
+is true whichever agent found it, so micro-skills cross between agents; tool pruning counts only
+this agent's own sessions, since tool names differ per agent, and the loop guard's envelope is
+seeded from this agent's own history only. This is on by default: the first session start in a
+repository reads its history in the background, later starts catch up on the other agents'
+sessions since, and `te history import --all` reads every repository the logs name at once (see
+[Earlier sessions](plugin/README.md#earlier-sessions)). A deny list that rests on those earlier
+sessions waits for `toolprune apply`, even under `auto`.
 
 Besides `on` and `off`, two modes are useful: `toolprune=propose` only proposes the deny list, and
 nothing changes until you run `toolprune apply`; `microskills=envfacts` learns facts only from

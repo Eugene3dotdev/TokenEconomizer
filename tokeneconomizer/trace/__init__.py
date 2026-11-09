@@ -42,6 +42,7 @@ from .opencode import (opencode_prompt_count, opencode_run_reply, opencode_sessi
                        opencode_session_to_claude, opencode_session_usage)
 from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_session_header,
                  pi_session_to_claude, pi_session_usage)
+from .sources import SOURCES, Source
 
 __all__ = [
     "RTK_PREFIX_RE", "call_cwds", "load_trajectory", "strip_rtk_prefix", "tool_usage",
@@ -70,4 +71,5 @@ __all__ = [
     "opencode_session_to_claude", "opencode_session_usage",
     "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_session_header",
     "pi_session_to_claude", "pi_session_usage",
+    "SOURCES", "Source",
 ]

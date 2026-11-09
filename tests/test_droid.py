@@ -63,8 +63,8 @@ def test_head_prompts_and_calls(tmp_path):
     assert droid.droid_session_to_claude(path, out) == 2
     calls = trace.claude_calls(trace.jsonl.lines(out))
     assert [(n, a["command"], ok, cwd) for n, a, _, ok, cwd in calls] == [
-        ("Execute", "pytest -q", True, "/work/widget"),
-        ("Execute", "python -m pytest -q", True, "/work/widget")]
+        ("Bash", "pytest -q", True, "/work/widget"),
+        ("Bash", "python -m pytest -q", True, "/work/widget")]
     assert "command not found" in calls[0][2]
     assert trace.claude_prompt_count(out) == 1
     assert len(list(trace.claude_prompt_turns(out))) == 1
@@ -88,3 +88,18 @@ def test_a_log_without_conversation_converts_to_nothing(tmp_path):
     path = write_droid_log(str(tmp_path / "sessions"), "/work/c", "s3", [])
     assert droid.droid_session_to_claude(path, str(tmp_path / "t.jsonl")) is None
     assert droid.droid_prompt_count(path) == 0
+
+
+def test_droids_tools_in_claude_codes_vocabulary():
+    assert droid.droid_tool("Execute", {"summary": "s", "command": "ls"}) == ("Bash",
+                                                                               {"command": "ls"})
+    assert droid.droid_tool("Create", {"file_path": "/a", "content": "x"}) == (
+        "Write", {"file_path": "/a"})
+    assert droid.droid_tool("LS", {"directory_path": "/d"}) == ("LS", {"path": "/d"})
+    assert droid.droid_tool("Glob", {"patterns": ["*.py", "*.md"], "folder": "/d"}) == (
+        "Glob", {"pattern": "*.py *.md", "path": "/d"})
+    assert droid.droid_tool("ApplyPatch", {"input": "*** Begin Patch\n*** Update File: a/b.py\n"
+                                                    "*** Add File: c.py\n*** End Patch"}) == (
+        "apply_patch", {"path": "a/b.py", "paths": ["a/b.py", "c.py"]})
+    assert droid.droid_tool("Script", {"script": "x"}) == ("Script", {"script": "x"})
+    assert droid.droid_tool(None, None) == ("", {})

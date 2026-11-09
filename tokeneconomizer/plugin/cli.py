@@ -19,11 +19,14 @@
     te config unset KEY ...           back to the next source down (the global file, then default)
     te repomap [show | refresh]       the repository map (`repomap=on`): what is cached, or
                                       make it now
-    te history import [--dry-run]     Claude Code: fold this repository's sessions from before
-                                      the plugin, from Claude Code's own logs (no model calls,
-                                      no deny list written; only before any session is folded;
-                                      with `history_import=on`, the first session start runs
-                                      it by itself)
+    te history import [--dry-run]     fold this repository's sessions from the agents' own
+                                      logs: this agent's from before the plugin, and the other
+                                      agents' (Claude Code, Codex, Copilot, Pi, Grok Build,
+                                      Hermes, opencode, Factory Droid), before and after. No
+                                      model calls, no deny list written; only sessions newer
+                                      than what this store has folded. With `history_import`
+                                      on (the default) session starts run it by themselves
+    te history import --all           the same for every repository the agents' logs name
     te history [import --status]      what that import did here
     te repos                          every repository with state here: how it was identified,
                                       its agents and sessions, the checkouts seen
@@ -582,7 +585,8 @@ def _config_view(cfg):
                     "history_import": d.pop("history_import"),
                     "history_max_sessions": d.pop("history_max_sessions"),
                     "history_days": d.pop("history_days"),
-                    "history_dirs": d.pop("history_dirs")},
+                    "history_dirs": d.pop("history_dirs"),
+                    "history_sources": d.pop("history_sources")},
         "other": d,
         "warnings": cfg.warnings,
     }
@@ -663,36 +667,52 @@ def _print_history(ctx, doc):
 
 
 def cmd_history(args):
-    """`te history [import]`: a repository's sessions from before the plugin (Claude Code)."""
+    """`te history [import]`: a repository's sessions from the agents' own logs: this agent's
+    from before the plugin, and the other agents', before and after."""
     ctx = _ctx(args)
     if args.action == "status" or args.status:
         _print_history(ctx, history.summary(ctx))
         return 0
-    if not ctx.host.keeps_history:
-        print(f"{ctx.host.name}: no session history the plugin reads (Claude Code only)")
-        return 1
+    if args.all:
+        if not args.dry_run and _refuse_unwritable(ctx.root):
+            return 1
+        res = history.run_all(ctx.root, ctx.env, ctx.config, dry_run=args.dry_run,
+                              log=lambda line: print(line, flush=True))
+        print(f"{res['repos']} repositor{'y' if res['repos'] == 1 else 'ies'} in the agents' "
+              f"history, {res['stores']} store(s)"
+              + ("" if args.dry_run else f", {res['imported']} session(s) read"))
+        return 0
     if args.dry_run:
         p = history.plan(ctx)
+        by = {}
+        for s in p["sessions"]:
+            by[s["source"]] = by.get(s["source"], 0) + 1
         print(f"{len(p['sessions'])} earlier session(s) of {ctx.repo.label} would be read"
               + (f", oldest {_when(p['sessions'][0]['started'])}, newest "
-                 f"{_when(p['sessions'][-1]['started'])}" if p["sessions"] else ""))
+                 f"{_when(p['sessions'][-1]['started'])}" if p["sessions"] else "")
+              + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(by.items())) + ")" if by
+                 else ""))
         skipped = dict(p["skipped"], **({"older_than_the_newest": p["over_limit"]}
                                         if p["over_limit"] else {}))
         if skipped:
             print("left out: " + ", ".join(f"{k} {v}" for k, v in sorted(skipped.items())))
-        why = history._refusal(ctx, False)
-        if why:
-            print(f"not importable now: {why}")
         return 0
     if _refuse_unwritable(ctx.store.base):
         return 1
+    if not args.auto:
+        # By hand: a run, whatever the last one left (a saved plan is resumed).
+        doc = history.read_state(ctx) or {}
+        if doc.get("state") in fold.HISTORY_BLOCKING and not history._stale(doc, time.time()):
+            print(f"not imported: an import of {ctx.repo.label}'s history is running")
+            return 1
+        history._save(ctx, dict(doc, state="running", heartbeat=time.time()))
     res = history.run(ctx, auto=args.auto, log=lambda line: print(line, flush=True))
     if args.auto:
         return 0
-    if res["state"] in ("refused", "skipped", "busy"):
+    if res["state"] in ("refused", "skipped", "busy", "error", "stopped"):
         print(f"not imported: {res['reason']}")
         return 1
-    print(f"imported {res['imported']} earlier session(s) of {ctx.repo.label}"
+    print(f"imported {res['read']} earlier session(s) of {ctx.repo.label}"
           + (f"; stopped at its time budget with {res['left']} to go (`te history import` "
              f"resumes)" if res["state"] == "partial" else ""))
     return 0
@@ -947,6 +967,9 @@ def build_parser():
     p.add_argument("action", nargs="?", default="status", choices=("status", "import"))
     p.add_argument("--dry-run", action="store_true",
                    help="say what would be imported, change nothing")
+    p.add_argument("--all", action="store_true",
+                   help="every repository the agents' history names, into the store of each "
+                        "agent that ran there")
     p.add_argument("--status", action="store_true", help="what the import did here")
     p.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_history)

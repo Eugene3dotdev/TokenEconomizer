@@ -418,26 +418,41 @@ def fold_session(ctx, session_id, transcript_path=None):
     if it is left for later: the fold lock stayed busy, or an import of earlier sessions is
     under way (the session stays pending, and the import folds it once it is done, else the
     next session start does). That is checked before the lock is taken too, so that a fold
-    never waits on an import's lock."""
+    never waits on an import's lock.
+
+    First, the other agents' sessions in this repository that ended before this one (and
+    after what this store has folded) are folded, so that this session does not strand them
+    behind the watermark (`history.catch_up`)."""
     if import_blocks(ctx):
         return None
     with ctx.store.locked("fold", timeout=FOLD_LOCK_WAIT_S) as got:
         if not got or import_blocks(ctx):
             return None
+        from . import history
+        if ctx.config.history_import and session_id not in (ctx.store.read("folded.json") or {}):
+            sess = ctx.store.read(os.path.join("sessions", f"{session_id}.json")) or {}
+            try:
+                history.catch_up(ctx, sess.get("ended") or time.time())
+            except Exception:
+                history._record_error(ctx.root)
         return fold_locked(ctx, session_id, transcript_path)
 
 
-def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None):
+def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None, source=None):
     """`fold_session` for a caller that holds the "fold" lock (the history import holds it for
-    its whole run). With `imported`, the session is one from the agent's history, read once
+    its whole run). With `imported`, the session is one from an agent's history, read once
     and only to learn from (see `history`): it is scored against the tools its own log shows,
     no model is called, no deny rule is held, written or given back, and its ledger record and
     `folded.json` entry say `imported`. `span` is (started, ended) for a session the plugin
-    never recorded."""
+    never recorded. `source` is the `trace.sources.Source` the log came from; one other than
+    this agent's own (a foreign session) is folded for micro-skills only, and its record names
+    its `origin`. `session_id` is the `folded.json` key (`<source>:<id>` for a foreign one).
+    Whatever the session, the fold raises the store's watermark to its end."""
     sess_name = os.path.join("sessions", f"{session_id}.json")
     folded = ctx.store.read("folded.json") or {}
     if session_id in folded:
         return None
+    foreign = source is not None and source.name != ctx.host.name
     sess = {} if imported else (ctx.store.read(sess_name) or {})
     if imported:
         transcript = transcript_path
@@ -453,11 +468,22 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
               "started": started, "ended": ended, "shadow": ctx.config.shadow}
     if imported:
         record["imported"] = True
+    if source is not None:
+        record["origin"] = source.name
     workdir = tempfile.mkdtemp(prefix="te-fold-")
     try:
-        trace_path = ctx.host.mechanism_trace(transcript, workdir) if transcript else None
+        if source is not None and transcript:
+            transcript = source.materialize(transcript, workdir)
+            trace_path = source.to_trace(transcript, workdir) if transcript else None
+        else:
+            trace_path = ctx.host.mechanism_trace(transcript, workdir) if transcript else None
         try:
-            prompts = ctx.host.prompt_count(transcript) if transcript else None
+            if not transcript:
+                prompts = None
+            elif source is not None:
+                prompts = source.prompt_count(transcript)
+            else:
+                prompts = ctx.host.prompt_count(transcript)
         except (OSError, ValueError):
             prompts = None
         record["prompts"] = prompts
@@ -473,8 +499,9 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
             with ctx.store.locked("mechanisms"):
                 inj = _fold_microskills(ctx, adapter, run_dir, session_id,
                                         injected=sess.get("injected_ids"), imported=imported)
-                # A session that ran no prompt is no evidence about the tools.
-                unt = None if prompts == 0 else _fold_toolprune(
+                # A session that ran no prompt is no evidence about the tools, and another
+                # agent's session names tools this agent does not have.
+                unt = None if prompts == 0 or foreign else _fold_toolprune(
                     ctx, adapter, run_dir, session_id, transcript=transcript,
                     workdir=workdir, prompts=prompts, imported=imported)
             record["injection"] = inj
@@ -483,7 +510,8 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                 schedule_pending(ctx)
             if not imported:
                 ctx.host.settle(transcript)
-            usage = ctx.host.session_usage(transcript)
+            usage = (source.usage(transcript) if source is not None
+                     else ctx.host.session_usage(transcript))
             eff, priced_by = accounting.effective(usage)
             record.update({k: usage.get(k) for k in (
                 "model", "requests", "input_tokens", "cache_read_input_tokens",
@@ -503,14 +531,18 @@ def fold_locked(ctx, session_id, transcript_path=None, imported=False, span=None
                 "spiral_judge_tokens": float(sess.get("judge_tokens", 0) or 0),
                 "spiral_nudge_writer_tokens": float(sess.get("writer_tokens", 0) or 0)}})
         ctx.store.append("ledger.jsonl", record)
-        entry = {"at": time.time(), "transcript": transcript}
+        entry = {"at": time.time(), "transcript": transcript_path if source else transcript}
         if imported:
             entry["imported"] = True
+        if source is not None:
+            entry["origin"] = source.name
         folded[session_id] = entry
         ctx.store.write("folded.json", folded)
         if sess:
             sess["folded"] = True
             ctx.store.write(sess_name, sess)
+        from . import history
+        history.advance(ctx, ended if ended is not None else record["folded_at"])
         return record
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

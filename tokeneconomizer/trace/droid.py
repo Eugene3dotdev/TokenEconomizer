@@ -17,9 +17,10 @@ Droid 1.5.0 logs written 2026-11-03 to 2026-11-05:
     (tool catalog updates, system reminders) or `repl-tool-result:` (a result of a tool the
     model ran inside its `Script` tool). Neither is a prompt the person typed.
 
-`droid_session_to_claude` rewraps each conversation entry as a Claude Code transcript line, so
-every reader built for Claude Code's log handles a Droid session. Droid's injected entries are
-written with `isMeta`, which keeps them out of the prompt count and the prompt-turns.
+`droid_session_to_claude` rewraps each conversation entry as a Claude Code transcript line, with
+Droid's tool names in Claude Code's vocabulary (`droid_tool`), so every reader built for Claude
+Code's log handles a Droid session. Droid's injected entries are written with `isMeta`, which
+keeps them out of the prompt count and the prompt-turns.
 """
 import json
 import os
@@ -30,6 +31,36 @@ from .jsonl import lines as _lines
 
 INJECTED_ID_PREFIXES = ("context-", "repl-tool-result:")
 _TAIL_BYTES = 64 * 1024
+_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+?)\s*$", re.M)
+# Droid's tool names (1.5.0; counted over 40 sessions) in Claude Code's vocabulary, which the
+# mechanisms read: `Execute {command}` is the shell, `Create` writes a file, `ApplyPatch`
+# carries a Codex-style patch whose file lines name what it touched.
+_NAMES = {"Execute": "Bash", "Read": "Read", "Edit": "Edit", "Create": "Write", "LS": "LS",
+          "Grep": "Grep", "Glob": "Glob", "ApplyPatch": "apply_patch"}
+
+
+def droid_tool(name, args):
+    """(name, args) of a Droid tool call as the mechanisms read it; any other tool as it is."""
+    args = args if isinstance(args, dict) else {}
+    mapped = _NAMES.get(name or "")
+    if mapped == "Bash":
+        return mapped, {"command": str(args.get("command") or "")}
+    if mapped in ("Read", "Edit", "Write"):
+        return mapped, {"file_path": str(args.get("file_path") or "")}
+    if mapped == "LS":
+        return mapped, {"path": str(args.get("directory_path") or args.get("path") or "")}
+    if mapped == "Grep":
+        return mapped, {"pattern": str(args.get("pattern") or ""),
+                        "path": str(args.get("path") or "")}
+    if mapped == "Glob":
+        pats = args.get("patterns") if isinstance(args.get("patterns"), list) else [
+            args.get("pattern") or ""]
+        return mapped, {"pattern": " ".join(str(p) for p in pats),
+                        "path": str(args.get("folder") or args.get("path") or "")}
+    if mapped == "apply_patch":
+        paths = _PATCH_FILE_RE.findall(str(args.get("input") or ""))
+        return mapped, {"path": paths[0] if paths else "", "paths": paths}
+    return name or "", args
 
 
 def droid_sessions_dir(env=None):
@@ -176,7 +207,14 @@ def droid_session_to_claude(path, out_path):
             continue
         content = msg.get("content")
         if isinstance(content, list):
-            n += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+            blocks = []
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    n += 1
+                    name, args = droid_tool(b.get("name"), b.get("input"))
+                    b = dict(b, name=name, input=args)
+                blocks.append(b)
+            content = blocks
         entry = {"type": role, "message": {"role": role, "content": content},
                  "timestamp": ev.get("timestamp"), "sessionId": head.get("session_id")}
         if cwd:

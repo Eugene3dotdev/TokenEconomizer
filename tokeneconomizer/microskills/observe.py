@@ -115,7 +115,9 @@ _TOOL_LAUNCH_RE = re.compile(r"^(uvx|uv\s+tool\s+run|pipx\s+run)\s+")
 _INTERP_VERSIONED_RE = re.compile(r"^(?:python|node)\d(?:\.\d+)?$")
 _ENV_ASSIGN_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_WRAP_RE = re.compile(r"^/bin/(?:ba)?sh\s+-l?c\s+(.*)$", re.S)
+# An agent's shell wrapper: Claude Code and Copilot run `/bin/bash -lc`, Codex `bash -lc`, or
+# the login shell its environment names (`/etc/profiles/per-user/u/bin/zsh -c` under Nix).
+_WRAP_RE = re.compile(r"^(?:\S*/)?(?:ba|z)?sh\s+-l?c\s+(.*)$", re.S)
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.S)
 _URL_HOST_RE = re.compile(r"https?://([^/\s'\"`]+)")
 

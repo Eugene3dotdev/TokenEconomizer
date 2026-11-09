@@ -651,7 +651,7 @@ repository is not used by Codex there), while settings are shared by every agent
 | `config set KEY=VALUE … [--global]` | change settings for this repository (or every one); see [Settings](#settings) |
 | `config unset KEY … [--global]` | remove the setting at this level, so the global value (or the default) applies |
 | `repomap` / `repomap refresh` | the cached repository map / make it now (see [Repository map](#repository-map)) |
-| `history` / `history import [--dry-run]` | Claude Code: what the import of this repository's earlier sessions did / run it now, or say what it would read (see [Earlier sessions](#earlier-sessions)) |
+| `history` / `history import [--dry-run] [--all]` | what the import of this repository's earlier sessions, from every agent's logs, did / run it now, or say what it would read; `--all` for every repository the logs name (see [Earlier sessions](#earlier-sessions)) |
 | `repos` | every repository it keeps state for: how it was identified, its sessions per agent, the checkouts seen |
 | `repos migrate` | file state an earlier version recorded under the repository it belongs to (runs by itself, once, after an upgrade) |
 | `repos merge KEY [INTO]` | merge one repository's state into another's (default: this one), for state whose checkouts are gone |
@@ -765,27 +765,34 @@ of the preset. A value you set with `loopguard.<name>` wins over both. Defaults 
 | `repomap_python` | auto | the Python that has aider installed |
 | `repomap_timeout` | `8` | seconds the first prompt may wait for a ranked map before the cached one is used |
 
-<a id="earlier-sessions"></a>**Earlier sessions** (Claude Code). Claude Code keeps every
-session's log (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`). With `history_import` on
-(it is off by default), the first session start in a repository where nothing has been folded
-yet reads that repository's earlier sessions from there, in a background `te history import`,
-oldest first and each once, without any model call; `history import` does the same by hand. A log
-belongs to the repository its recorded directory is in; when that directory no longer exists,
-to the repository whose root Claude Code would file under the same folder name (an exact match).
+<a id="earlier-sessions"></a>**Earlier sessions.** Every agent the plugin reads keeps its
+sessions' logs: Claude Code (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`), Codex
+(`~/.codex/sessions/`, and an OpenClaw agent's embedded Codex home), the Copilot CLI
+(`~/.copilot/session-state/`), Pi (`~/.pi/agent/sessions/`), Grok Build (`~/.grok/sessions/`),
+Hermes (`~/.hermes/state.db`), opencode (`~/.local/share/opencode/opencode.db`) and Factory
+Droid (`~/.factory/sessions/`, read as history only: the plugin runs no hooks in Droid). With
+`history_import` on (the default), the first session start in a repository reads that
+repository's sessions from all of them, in a background `te history import`, oldest first and
+each once, without any model call; later session starts catch up on the other agents' sessions
+since, and a session's own fold first folds the other agents' sessions that ended before it.
+`history import` does the same by hand, and `history import --all` reads every repository the
+logs name, into the store of each agent that ran there. A log belongs to the repository its
+recorded directory is in; when that directory no longer exists, Claude Code's and Droid's logs
+belong to the repository whose root they would file under the same folder name (an exact match).
 Left out: a log written in the last ten minutes, one the plugin already saw, one with no prompt,
-one over 256 MB, one older than `history_days`, and a one-prompt `claude -p` or SDK run. A
-repository that already has folded sessions is not imported into (`history import` says why), so
-that earlier sessions are never learned after later ones; a session that ends during the import is
-folded after it. A deny list that rests on those earlier sessions is only proposed, even with
-`toolprune=auto`: the next session start says so, and nothing changes until you run `toolprune
-apply`. `status` counts the earlier sessions on their own. Since a repository's history is read
-only before its first session is folded, turn the import on right after installing
-(`config set history_import=on --global`), or run `history import` in a repository before its
-first session there ends.
+one over 256 MB, one older than `history_days`, a one-prompt `claude -p`, `codex exec` or
+`hermes -z` run, and one that ended before the newest session this store has already folded
+(`behind`), so that earlier sessions are never learned after later ones; a session that ends
+during the import is folded after it. Another agent's session teaches micro-skills only: tool
+pruning never counts it (tool names differ per agent), and the loop guard's envelope is seeded
+from this agent's own history only. A deny list that rests on those earlier sessions is only
+proposed, even with `toolprune=auto`: the next session start says so, and nothing changes until
+you run `toolprune apply`. `status` counts the earlier sessions on their own, by agent.
 
 | Key | Default | What it sets |
 |---|---|---|
-| `history_import` | `false` | `true`: a repository's first session start reads its earlier sessions |
+| `history_import` | `true` | `false`: learn only from sessions the plugin sees end |
+| `history_sources` | `all` | which agents' logs are read: `all`, `self` (this agent's own only), or names separated by commas (`claude`, `codex`, `copilot`, `pi`, `grok`, `hermes`, `opencode`, `droid`) |
 | `history_max_sessions` | `200` | the most recent earlier sessions read |
 | `history_days` | `365` | how far back, in days |
 | `history_dirs` | none | further Claude Code `projects` folders to read, separated by commas |

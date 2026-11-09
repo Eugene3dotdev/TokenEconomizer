@@ -201,24 +201,28 @@ def test_history_import_off_reads_nothing_and_the_newest_are_kept(env, repo, cla
     assert doc["over_limit"] == 2 and doc["skipped"]["too_old"] == 1
 
 
-def test_by_default_a_session_start_reads_no_history_and_an_import_by_hand_does(
+def test_by_default_the_first_session_start_reads_history_and_off_reads_nothing(
         env, repo, claude_home, tmp_path, monkeypatch, capsys):
-    """Off by default: nothing is read until the person asks, by the setting or by hand."""
-    assert load_config(str(tmp_path / "empty"), env={}).history_import is False
+    """On by default: the first session start in a repository reads its history; `off` reads
+    nothing until the person asks by hand."""
+    assert load_config(str(tmp_path / "empty"), env={}).history_import is True
     for i in range(2):
         history_log(claude_home, repo, f"old{i}", trap(repo, i), age_s=3600 * (10 - i))
     default = {k: v for k, v in env.items() if k != "TE_HISTORY_IMPORT"}
     start_hook(default, repo, "a", tmp_path)
     st = store_for(env, repo)
-    assert st.read("history.json") is None and not st.read("folded.json")
+    assert st.read("history.json")["state"] == "done" and ledger_ids(st) == ["old0", "old1"]
 
-    for k, v in default.items():
+    other = dict(default, TOKENECONOMIZER_HOME=env["TOKENECONOMIZER_HOME"] + "2",
+                 TE_HISTORY_IMPORT="off")
+    start_hook(other, repo, "b", tmp_path)
+    st2 = store_for(other, repo)
+    assert st2.read("history.json") is None and not st2.read("folded.json")
+    for k, v in other.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.delenv("TE_HISTORY_IMPORT", raising=False)
     assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 0
     assert "imported 2 earlier session(s)" in capsys.readouterr().out
-    assert ledger_ids(st) == ["old0", "old1"]
-
+    assert ledger_ids(st2) == ["old0", "old1"]
 
 def test_a_moved_checkouts_logs_are_matched_by_their_exact_folder(env, repo, claude_home):
     """Claude Code files a moved directory's logs under the folder of its new path, while they
@@ -244,10 +248,11 @@ def test_unsafe_session_ids_are_never_used(env, repo, claude_home):
 
 
 # ---- time order ------------------------------------------------------------------------------
-def test_a_repository_with_folded_sessions_records_the_skip_and_a_manual_import_refuses(
+def test_a_repository_with_folded_sessions_reads_only_what_ended_after_its_last_fold(
         env, repo, claude_home, tmp_path, monkeypatch, capsys):
-    """An upgrade: the plugin has already folded this repository's sessions, so the sessions
-    from before it would be learned after them."""
+    """An upgrade, or another agent's session since: the plugin has already folded sessions
+    here, so only sessions that ended after the newest of them are learned; an earlier one
+    would be learned after them, and is counted as `behind`."""
     off = dict(env, TE_HISTORY_IMPORT="off")
     for i in range(2):
         t = trap_session(str(tmp_path / f"s{i}.jsonl"), repo, i)
@@ -255,22 +260,29 @@ def test_a_repository_with_folded_sessions_records_the_skip_and_a_manual_import_
                    "source": "startup", "transcript_path": t, "cwd": repo})
         call(off, {"hook_event_name": "SessionEnd", "session_id": f"s{i}",
                    "transcript_path": t, "cwd": repo})
-    history_log(claude_home, repo, "old0", trap(repo, 0))
     st = store_for(env, repo)
+    mark = st.read("history.json")["through"]
+    assert abs(mark - time.time()) < 60                       # the live folds raised it
+    # The live sessions ran two hours ago, as far as the watermark is concerned.
+    st.write("history.json", {"through": mark - 7200})
+    history_log(claude_home, repo, "old0", trap(repo, 0), age_s=10800)      # before them
+    history_log(claude_home, repo, "new0", trap(repo, 1), age_s=3600)       # after them
     spawned = []
     monkeypatch.setattr(LiveContext, "spawn", lambda self, argv, log: spawned.append(argv))
     start_hook(detached(env), repo, "s2", tmp_path)
+    assert spawned == [["history", "import", "--auto"]]
+    assert history.run(ctx_for(detached(env), repo), auto=True)["state"] == "done"
     doc = st.read("history.json")
-    assert doc["state"] == "skipped" and "already" in doc["reason"] and spawned == []
-    start_hook(detached(env), repo, "s3", tmp_path)
-    assert st.read("history.json") == doc and spawned == []            # never retried
+    assert doc["imported"] == 1 and doc["skipped"] == {"behind": 1}
+    assert ledger_ids(st) == ["s0", "s1", "new0"] and "old0" not in st.read("folded.json")
+    assert doc["through"] >= os.path.getmtime(
+        os.path.join(str(claude_home), "projects", trace.claude_project_folder(repo),
+                     "new0.jsonl"))
 
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 1
-    out = capsys.readouterr().out.strip()
-    assert out.startswith("not imported: acme/widget already has folded sessions")
-    assert len(out.splitlines()) == 1
+    assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 0
+    assert "imported 0 earlier session(s)" in capsys.readouterr().out
     assert "old0" not in st.read("folded.json")
 
 
@@ -385,7 +397,8 @@ def test_an_import_that_fails_stops_blocking_live_folds(env, repo, claude_home, 
 
 def test_an_import_waits_for_a_live_fold_already_under_way(env, repo, claude_home, tmp_path):
     """A session's end that checked `history.json` just before the first session start wrote
-    `running` folds under the lock; the import waits for it, then finds a folded session."""
+    `running` folds under the lock; the import waits for it, then finds the earlier log behind
+    the session it folded."""
     history_log(claude_home, repo, "old0", trap(repo, 0))
     ctx = ctx_for(detached(env), repo)
     live_session(ctx, "live0", trap_session(str(tmp_path / "live0.jsonl"), repo, 5))
@@ -406,9 +419,9 @@ def test_an_import_waits_for_a_live_fold_already_under_way(env, repo, claude_hom
     res = history.run(ctx_for(detached(env), repo), auto=True)
     th.join()
     assert time.monotonic() - t0 >= 0.3                     # it waited for the lock
-    assert res["state"] == "skipped" and "already has folded sessions" in res["reason"]
+    assert res["state"] == "done" and res["imported"] == 0 and res["skipped"] == {"behind": 1}
     assert ledger_ids(ctx.store) == ["live0"]
-    assert ctx.store.read("history.json")["state"] == "skipped" and not fold.import_blocks(ctx)
+    assert ctx.store.read("history.json")["state"] == "done" and not fold.import_blocks(ctx)
 
 
 def test_a_live_fold_that_waited_on_the_lock_looks_at_the_import_again(env, repo, tmp_path,
@@ -444,8 +457,9 @@ def test_what_a_plan_leaves_out(env, repo, claude_home, monkeypatch):
 
 
 def test_folded_means_a_session_record_not_a_charge(env, repo, claude_home, monkeypatch):
-    """A ledger that holds a session's record is folded state though `folded.json` is empty; a
-    ledger that holds only the loop guard's judge's charges is not."""
+    """A ledger that holds a session's record is folded state, and its end is the watermark,
+    though `folded.json` is empty; a ledger that holds only the loop guard's judge's charges
+    is not."""
     history_log(claude_home, repo, "old0", trap(repo, 0))
     spawned = []
     monkeypatch.setattr(LiveContext, "spawn", lambda self, argv, log: spawned.append(argv))
@@ -455,13 +469,17 @@ def test_folded_means_a_session_record_not_a_charge(env, repo, claude_home, monk
     history.maybe_start(ctx)
     assert spawned == [["history", "import", "--auto"]]
     assert history.run(ctx, auto=True)["state"] == "done"
+    assert history.watermark(ctx) >= time.time() - 3700
 
     other = ctx_for(detached(dict(env, TOKENECONOMIZER_HOME=env["TOKENECONOMIZER_HOME"] + "2")),
                     repo)
-    other.store.append("ledger.jsonl", {"kind": "session", "session_id": "s0", "folded_at": 1.0})
+    other.store.append("ledger.jsonl", {"kind": "session", "session_id": "s0",
+                                        "folded_at": time.time() - 1800})
     history.maybe_start(other)
-    assert spawned == [["history", "import", "--auto"]]
-    assert other.store.read("history.json")["state"] == "skipped"
+    assert spawned == [["history", "import", "--auto"]] * 2
+    res = history.run(other, auto=True)
+    assert res["state"] == "done" and res["skipped"] == {"behind": 1}
+    assert "old0" not in (other.store.read("folded.json") or {})
 
 
 def test_a_session_whose_fold_fails_is_skipped_and_the_rest_imported(env, repo, claude_home,
@@ -547,7 +565,8 @@ def test_te_history_import_resumes_a_plan_that_was_stopped(env, repo, claude_hom
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(history, "_clock", time.monotonic)
     assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 0
-    assert "imported 2 earlier session(s)" in capsys.readouterr().out
+    assert "imported 1 earlier session(s)" in capsys.readouterr().out      # the one left
+    assert ctx.store.read("history.json")["imported"] == 2
     assert ledger_ids(ctx.store) == ["old0", "old1"]
 
 
@@ -801,16 +820,37 @@ def test_te_history_dry_run_writes_nothing(env, repo, claude_home, monkeypatch, 
     assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 0
     assert "imported 1 earlier session(s)" in capsys.readouterr().out
     assert cli.main(["--cwd", repo, "--host", "claude", "history", "import", "--status"]) == 0
-    assert "read 1 earlier session(s)" in capsys.readouterr().out
-    assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 1
+    assert "read 1 earlier session(s) from Claude Code's history" in capsys.readouterr().out
+    assert cli.main(["--cwd", repo, "--host", "claude", "history", "import"]) == 0
+    assert "imported 0 earlier session(s)" in capsys.readouterr().out
 
-
-def test_no_hook_reads_history_on_another_agent(env, repo, claude_home, tmp_path):
-    history_log(claude_home, repo, "old0", trap(repo, 0))
+def test_a_hook_on_another_agent_reads_this_agents_history_as_foreign(env, repo, claude_home,
+                                                                       tmp_path):
+    """Codex's first session start in the repository reads Claude Code's earlier session there:
+    micro-skills learn from it, tool pruning never sees it, and its key names its origin."""
+    for i in range(4):
+        history_log(claude_home, repo, f"old{i}", trap(repo, i), age_s=3600 * (10 - i))
     t = str(tmp_path / "rollout-x.jsonl")
     open(t, "w").close()
     out = io.StringIO()
     hook.main(["--host", "codex"], io.StringIO(json.dumps({
         "hook_event_name": "SessionStart", "session_id": "c1", "source": "startup",
         "transcript_path": t, "cwd": repo})), out, env)
-    assert store_for(env, repo, host="codex").read("history.json") is None
+    st = store_for(env, repo, host="codex")
+    doc = st.read("history.json")
+    assert doc["state"] == "done" and doc["imported"] == 4 and doc["origins"] == {"claude": 4}
+    assert st.read("folded.json")["claude:old0"] == {
+        "at": st.read("folded.json")["claude:old0"]["at"],
+        "transcript": st.read("folded.json")["claude:old0"]["transcript"],
+        "imported": True, "origin": "claude"}
+    recs = [r for r in st.read_lines("ledger.jsonl") if r["kind"] == "session"]
+    assert [r["session_id"] for r in recs] == ["claude:old0", "claude:old1", "claude:old2", "claude:old3"]
+    assert all(r["origin"] == "claude" and r["imported"] and r["untool"] is None for r in recs)
+    assert st.read("injection.json")["sessions"] == 4
+    assert st.read("untool.json") is None
+    second = hook.run({"hook_event_name": "SessionStart", "session_id": "c2",
+                       "source": "startup", "transcript_path": t, "cwd": repo}, env,
+                      host_hint="codex")
+    assert CLAIM in second["hookSpecificOutput"]["additionalContext"]
+    assert ("TokenEconomizer read 4 earlier session(s) of acme/widget from Claude Code's "
+            "history.") in second["systemMessage"]
