@@ -66,9 +66,14 @@ backfill). A live fold first folds the other agents' sessions that ended before 
 watermark, at most `CATCHUP_PER_FOLD`, so that it does not strand them. The import holds the
 repository's fold lock for its whole run, and while it runs or waits to resume, a session that
 ends stays unfolded and is folded after it; a run stopped by its 30-minute budget resumes the
-plan it saved, in order, and one whose heartbeat went stale is restarted by the next session
-start. A session whose fold fails, or that the import's process died on twice, is left out. An
-imported session is folded only to learn from: against the tools its own log shows
+plan it saved, in order. A run whose heartbeat went quiet for 15 minutes, or whose process is
+gone on the machine that ran it, has stalled: `te status`, `te history` and `te repos` say so,
+and the next session start, `te history import` or `te history import --all` resumes it from
+its saved place; a start takes the import under a lock, so one worker runs it. A stalled import
+that no log leads to any more (a deleted temporary directory) is marked stopped by `te history
+import --all`, its plan kept. A session whose fold fails, or that the import's process died on
+twice, is left out. An imported session is folded only to learn from: against the tools its own
+log shows
 (never today's catalog), with no model call, no deny rule held, written or given back, and a
 ledger record marked `imported` (and `origin`, the agent whose log it is) that `te status` and
 `te repos` count apart. Another agent's session (`<source>:<id>` in `folded.json`) is folded
