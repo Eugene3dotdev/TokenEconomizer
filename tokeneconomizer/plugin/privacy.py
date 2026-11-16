@@ -119,11 +119,19 @@ class Excluded:
         if not isinstance(log, dict):
             return False
         path = log.get("path")
-        # A database row is `<db>#<id>`: the file is the database.
-        file = path.partition("#")[0] if isinstance(path, str) else None
-        # The folder an agent files a log under is the log's parent, named for the directory.
-        parent = os.path.basename(os.path.dirname(file)) if file else None
-        return (self.path(file) or self.folder(log.get("folder")) or self.folder(parent))
+        if not isinstance(path, str):
+            return self.folder(log.get("folder"))
+        # A database row is `<db>#<id>`, but a file's own name may hold a `#` too: every
+        # reading is checked, the whole path and each prefix before a `#`.
+        parts = path.split("#")
+        files = ["#".join(parts[:i]) for i in range(len(parts), 0, -1)]
+        # The folder an agent files a log under is the log's parent, named for the directory;
+        # for a link, the folder its target is filed under counts too.
+        return (any(self.path(f) or any(self.folder(os.path.basename(os.path.dirname(g)))
+                                        for g in ({f, os.path.realpath(f)}
+                                                  if os.path.isabs(f) else {f}))
+                    for f in files if f)
+                or self.folder(log.get("folder")))
 
     def head(self, head):
         """Does a log's head say its session ran in an excluded directory?"""

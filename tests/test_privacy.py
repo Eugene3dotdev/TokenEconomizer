@@ -118,6 +118,11 @@ def test_a_cache_an_earlier_version_wrote_is_cleared_of_excluded_sessions(
         keep: {"mtime": 1.0, "size": 1, "head": dict(head, cwd=repo)},
         gone: {"mtime": 1.0, "size": 1, "head": dict(head, cwd=private[1])},
         str(codex): {"mtime": 1.0, "size": 1, "head": dict(head, cwd=private[2])}})
+    linked = os.path.join(os.path.dirname(keep), "x2#extra.jsonl")
+    os.symlink(gone, linked)
+    doc = Store(root).read(history.CACHE)
+    doc[linked] = {"mtime": 1.0, "size": 1, "head": dict(head, cwd=repo)}
+    Store(root).write(history.CACHE, doc)
     heads = history._Heads(root, privacy.excluded(env))
     assert set(heads.doc) == {keep} and heads.dirty
     history.repositories(root, env, load_config(root, None, env))
@@ -219,12 +224,13 @@ def test_a_log_that_links_into_an_excluded_directory_is_never_read(
     family = home / "Documents" / "Family"
     projects = home / ".claude" / "projects"
     folder = projects / trace.claude_project_folder(repo)
-    for n in range(2):
+    # One link plainly named, one with a `#` in its name (not a database row).
+    for n, name in enumerate(("l0.jsonl", "l1#extra.jsonl")):
         real = history_log(tmp_path / "staging", repo, f"l{n}", trap(repo, n), age_s=3600 + n)
         target = family / f"l{n}.jsonl"
         os.replace(real, target)
         folder.mkdir(parents=True, exist_ok=True)
-        os.symlink(target, folder / f"l{n}.jsonl")
+        os.symlink(target, folder / name)
     other = checkout(tmp_path / "other", "other")
     hidden = home / "Library" / "Messages" / "agent-logs"
     history_log(tmp_path / "staging2", other, "m1", trap(other, 1), age_s=3600)
