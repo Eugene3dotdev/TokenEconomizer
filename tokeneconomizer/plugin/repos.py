@@ -813,6 +813,7 @@ def ignored_git_entries(cwd, env=None):
 
 def listing(root, env=None, current=None):
     """One row per state directory: identity, agents and sessions, checkouts, notes."""
+    from . import history
     idx = Store(root).read(INDEX) or {}
     checkouts = {}
     for path, v in (idx.get("checkouts") or {}).items():
@@ -828,9 +829,14 @@ def listing(root, env=None, current=None):
         if not os.path.isdir(d):
             continue
         doc = Store(d).read("repo.json") or {}
-        agents, imported, cwds, last = {}, {}, set(), 0.0
+        agents, imported, cwds, last, stalled = {}, {}, set(), 0.0, []
         for h in _host_dirs(d):
             st = Store(os.path.join(d, h))
+            why = history.stalled(st.read(history.STATE))
+            if why:
+                stalled.append(f"{h}: its import of the agents' history stalled ({why}); a "
+                               f"session start there, or `te history import --all`, resumes or "
+                               f"settles it")
             sess = _sessions(st)
             folded = st.read("folded.json") or {}
             # Sessions imported from the agent's history are counted apart.
@@ -852,6 +858,7 @@ def listing(root, env=None, current=None):
                          "(it runs by itself at the next session start)")
         if home and any(os.path.realpath(p) == home for p in checkouts.get(key, [])):
             notes.append("your home directory: holds only sessions started in ~ itself")
+        notes.extend(stalled)
         rows.append({"key": key, "label": doc.get("label") or dir_label(d) or key,
                      "how": doc.get("how", ""), "remote": doc.get("remote", ""),
                      "agents": agents, "imported": imported, "last": last, "state": d,

@@ -53,8 +53,15 @@ repository's one fold lock for its whole run, and while `history.json` says `run
 session's end never waits on the import): the session stays pending, and the import folds the
 pending sessions, oldest first, once it is done. The plan -- the ordered session ids and paths
 -- is saved, and a run stopped by its time budget (`BUDGET_S`) is `partial` and resumes the
-same plan in the same order. The run refreshes a heartbeat; one gone stale (`HEARTBEAT_STALE_S`:
-the process died) lets the next session start restart it, so live folding cannot stay blocked.
+same plan in the same order. The run records its process (`pid`, `host`) and refreshes a
+heartbeat, while it plans as well as after each session; a run whose heartbeat went quiet
+(`HEARTBEAT_STALE_S`), or whose process is gone on the machine that ran it, has **stalled**
+(`stalled`): `te status` and `te history` say so rather than "running", and the next session
+start, `te history import` or `te history import --all` resumes it from its saved place, so live
+folding cannot stay blocked. Only one process runs an import: a start takes the import under
+the `history` lock (`claim`), and the run itself holds the fold lock. A stalled import that no
+repository in the logs leads to any more (a deleted temporary directory) is marked `stopped` by
+`te history import --all`, its plan kept, since no session start there may ever come.
 A session whose fold fails is counted as skipped and not tried again, and so is one the
 import's process died on `MAX_ATTEMPTS` times (`attempt`).
 
@@ -74,9 +81,10 @@ cache is derived state: deleting it costs one slow scan.
     {"state": "running" | "partial" | "done" | "skipped" | "stopped", "reason",
      "plan": [{"id", "key", "source", "path", "started", "ended"}], "next", "imported",
      "origins": {source: n}, "skipped": {why: n}, "over_limit", "attempt": {"id", "n"},
-     "started", "heartbeat", "finished", "noticed", "through", "caught_up"}
+     "started", "heartbeat", "pid", "host", "finished", "noticed", "through", "caught_up"}
 """
 import os
+import socket
 import time
 import traceback
 
@@ -90,6 +98,7 @@ LOG = "history.log"
 CACHE = "history-cache.json"
 BUDGET_S = 1800                    # one run's time budget; a longer import resumes next time
 HEARTBEAT_STALE_S = 900            # a running import this quiet has died
+BEAT_EVERY_S = 60                  # how often a run that is planning refreshes its heartbeat
 MAX_BYTES = 256 * 1024 * 1024      # a log larger than this is not read
 HISTORY_LOCK_S = 1.0               # a session start's wait for `history.json` (then next time)
 MAX_ATTEMPTS = 2                   # runs that died on one session before it is left out
@@ -122,6 +131,67 @@ def _num(v, default=0):
 
 def _stale(doc, now):
     return now - _num(doc.get("heartbeat")) >= HEARTBEAT_STALE_S
+
+
+def _this_host():
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ""
+
+
+def _pid_alive(pid):
+    """Does process `pid` exist on this machine: True, False, or None when that cannot be told
+    (no pid; Windows, where `os.kill` ends a process rather than probing it)."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or os.name == "nt":
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                     # another user's process holds the pid
+    except OSError:
+        return None
+    return True
+
+
+def _ago(seconds):
+    s = max(0, int(seconds))
+    if s < 120:
+        return f"{s} s"
+    if s < 7200:
+        return f"{s // 60} min"
+    if s < 172800:
+        return f"{s // 3600} h"
+    return f"{s // 86400} days"
+
+
+def stalled(doc, now=None):
+    """Why an import `history.json` says is `running` has stopped before it finished, or None
+    while it may still be running (and for every other state: `partial` waits to resume).
+    Its process gone, on the machine that ran it; or its heartbeat quiet for
+    `HEARTBEAT_STALE_S`. A live pid never outweighs a quiet heartbeat: the pid of a process
+    that died may have been given to another."""
+    if not isinstance(doc, dict) or doc.get("state") != "running":
+        return None
+    now = time.time() if now is None else now
+    pid = doc.get("pid")
+    if doc.get("host") and doc.get("host") == _this_host() and _pid_alive(pid) is False:
+        return f"its process, pid {pid}, is gone"
+    if _stale(doc, now):
+        return f"no heartbeat for {_ago(now - _num(doc.get('heartbeat')))}"
+    return None
+
+
+def _claim(doc, now):
+    """`doc` taken for a run about to start or resume: `running` with a fresh heartbeat and no
+    process yet. The worker writes its own pid once it holds the fold lock; until then only the
+    heartbeat says the run is alive, so that a dead worker's pid cannot mark the new one dead."""
+    doc.update(state="running", heartbeat=now)
+    doc.pop("pid", None)
+    doc.pop("host", None)
+    return doc
 
 
 def _ledger_size(store):
@@ -276,9 +346,9 @@ class _Heads:
         self.dirty = False
 
 
-def scan(ctx, heads):
+def scan(ctx, heads, beat=None):
     """Every enabled source's logs with their heads: [(source, log, head)]. Reads, and writes
-    nothing but the cache `heads`."""
+    nothing but the cache `heads` (and, through `beat`, a run's heartbeat)."""
     out, present = [], set()
     for source in _enabled_sources(ctx):
         extra = ctx.config.history_dirs if source.name == "claude" else ()
@@ -288,13 +358,15 @@ def scan(ctx, heads):
             _record_error(ctx.root)
             continue
         for log in logs:
+            if beat is not None:
+                beat()
             present.add(log["path"])
             out.append((source, log, heads.head(source, log)))
     heads.present = present
     return out
 
 
-def plan(ctx, now=None, heads=None, cache=None):
+def plan(ctx, now=None, heads=None, cache=None, beat=None):
     """What an import would fold here, and why the rest is left out; reads, never writes
     (but the head cache). `heads` and `cache` (repository identities by directory) may be
     shared by a caller that plans several stores of one host.
@@ -318,7 +390,7 @@ def plan(ctx, now=None, heads=None, cache=None):
 
     def skip(why):
         skipped[why] = skipped.get(why, 0) + 1
-    for source, log, head in scan(ctx, heads):
+    for source, log, head in scan(ctx, heads, beat):
         folder = head.get("folder") or log.get("folder")
         if not is_this_repository(ctx, folder, head.get("cwd"), cache, source=source.name):
             continue
@@ -448,14 +520,72 @@ def replay_envelope(ctx, transcript_path, source=None):
 def _update(ctx, change, timeout=10.0):
     """Read-modify-write `history.json` under its own lock; returns the new doc, or None when
     the lock was busy. `change(doc)` returns False to write nothing."""
-    with ctx.store.locked("history", timeout=timeout) as got:
+    return _update_store(ctx.store, change, timeout)
+
+
+def _update_store(store, change, timeout=10.0):
+    with store.locked("history", timeout=timeout) as got:
         if not got:
             return None
-        doc = read_state(ctx) or {}
+        doc = store.read(STATE)
+        doc = doc if isinstance(doc, dict) else {}
         if change(doc) is False:
             return doc
-        ctx.store.write(STATE, doc)
+        store.write(STATE, doc)
         return doc
+
+
+def claim(ctx, now=None):
+    """Take this store's import for a run started by hand or by `--all`, under the `history`
+    lock: unless one is running and has not stalled. Returns `(before, None)` when taken --
+    `before`, the doc as it was, for a caller whose run never began to put back -- or
+    `(None, why)`: "running", or "busy" when the lock stayed taken."""
+    now = time.time() if now is None else now
+    out = {}
+
+    def take(doc):
+        if doc.get("state") == "running" and not stalled(doc, now):
+            out["why"] = "running"
+            return False
+        out["before"] = dict(doc)
+        _claim(doc, now)
+        return None
+    if _update(ctx, take, timeout=HISTORY_LOCK_S) is None:
+        return None, "busy"
+    return (None, out["why"]) if "why" in out else (out["before"], None)
+
+
+def _beater(ctx, every=None):
+    """The heartbeat of a run while it plans, which saves no place for as long as reading every
+    log's head takes: `history.json["heartbeat"]` refreshed at most every `every` seconds,
+    while the doc still names this process."""
+    every = BEAT_EVERY_S if every is None else every
+    last = [time.time()]
+    me = os.getpid()
+
+    def beat():
+        t = time.time()
+        if t - last[0] < every:
+            return
+        last[0] = t
+
+        def fresh(doc):
+            if doc.get("pid") != me or doc.get("state") != "running":
+                return False
+            doc["heartbeat"] = t
+            return None
+        _update(ctx, fresh, timeout=HISTORY_LOCK_S)
+    return beat
+
+
+def _release(doc):
+    """A worker started under a claim that never got the fold lock: the claim (`running`, no
+    process) goes back as `partial`, which the next session start resumes, rather than reading
+    as a run in progress. A doc a worker has since taken (its pid) is left to it."""
+    if doc.get("state") != "running" or doc.get("pid") is not None:
+        return False
+    doc.update(state="partial", reason="the fold lock was busy; the next session start resumes it")
+    return None
 
 
 def _save(ctx, doc):
@@ -486,6 +616,8 @@ def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None, heads=None, cach
     now = time.time() if now is None else now
     with ctx.store.locked("fold", timeout=fold.FOLD_LOCK_WAIT_S) as got:
         if not got:
+            if auto:
+                _update(ctx, _release, timeout=HISTORY_LOCK_S)
             return {"state": "busy", "reason": "another fold holds this repository's lock"}
         doc = read_state(ctx) or {}
         state = doc.get("state")
@@ -517,14 +649,16 @@ def _run_locked(ctx, doc, resuming, now, budget_s, log, heads=None, cache=None):
     """`run` once it may go on, under the fold lock: plan (or take up the saved plan), fold
     each session in order, save the place after each, then fold the sessions left pending."""
     before = int(_num(doc.get("imported")))
+    me = {"pid": os.getpid(), "host": _this_host()}
     if not resuming:
         # Live folds wait from now on, while the plan is made, not only once it is. What
         # earlier runs read (`imported`, `origins`, `retry`) and announced stands; the plan is
         # new.
         base = {k: v for k, v in doc.items()
-                if k not in ("plan", "next", "attempt", "skipped", "over_limit", "planned")}
-        _save(ctx, dict(base, state="running", heartbeat=time.time()))
-        p = plan(ctx, now, heads=heads, cache=cache)
+                if k not in ("plan", "next", "attempt", "skipped", "over_limit", "planned",
+                             "reason")}
+        _save(ctx, dict(base, state="running", heartbeat=time.time(), **me))
+        p = plan(ctx, now, heads=heads, cache=cache, beat=_beater(ctx))
         doc = dict(base, state="running", plan=p["sessions"], next=0, skipped=p["skipped"],
                    over_limit=p["over_limit"], planned=len(p["sessions"]), started=time.time())
         doc.setdefault("imported", 0)
@@ -532,7 +666,8 @@ def _run_locked(ctx, doc, resuming, now, budget_s, log, heads=None, cache=None):
         if p["sessions"]:
             doc["noticed"] = False
             _say(log, f"{len(p['sessions'])} earlier session(s) of {ctx.repo.label} to read")
-    doc.update(state="running", pid=os.getpid(), heartbeat=time.time())
+    doc.pop("reason", None)
+    doc.update(state="running", heartbeat=time.time(), **me)
     doc["runs"] = int(_num(doc.get("runs"))) + 1
     _save(ctx, doc)
     skipped = doc["skipped"] = dict(doc["skipped"] if isinstance(doc.get("skipped"), dict)
@@ -733,14 +868,14 @@ def maybe_start(ctx, now=None):
             return None
         if not ctx.config.history_import:
             return False
-        if state == "partial" or (state == "running" and _stale(doc, now)):
-            doc["heartbeat"] = now      # so that another session start does not start one too
+        if state == "partial" or (state == "running" and stalled(doc, now)):
+            _claim(doc, now)            # so that another session start does not start one too
         elif state == "running":
             return False                # alive: left to run
         elif state in (None, "done", "skipped", "stopped"):
             if state is not None and now - _num(doc.get("caught_up")) < CATCHUP_EVERY_S:
                 return False
-            doc.update(state="running", heartbeat=now)
+            _claim(doc, now)
             doc.setdefault("started", now)
             doc.setdefault("noticed", False)
             if state == "skipped":
@@ -788,29 +923,49 @@ def notice(ctx):
             f"{_labels(out['origins'])}.")
 
 
-def summary(ctx):
-    """`history.json` without its plan, for `te status` and `te history`."""
+def summary(ctx, now=None):
+    """`history.json` without its plan, for `te status` and `te history`, with what it means
+    now: `status` (its state, or "stalled" for a run that stopped before it finished, and
+    why: `stalled`) and `heartbeat_age_s`."""
     doc = read_state(ctx)
     if doc is None:
         return None
+    now = time.time() if now is None else now
     out = {k: v for k, v in doc.items() if k != "plan"}
     if isinstance(doc.get("plan"), list):
         out["left"] = max(0, len(doc["plan"]) - int(_num(doc.get("next"))))
+    why = stalled(doc, now)
+    out["status"] = "stalled" if why else (doc.get("state") if isinstance(doc.get("state"), str)
+                                           else "none")
+    if why:
+        out["stalled"] = why
+    if _num(doc.get("heartbeat"), None) is not None:
+        out["heartbeat_age_s"] = round(now - doc["heartbeat"], 1)
     return out
 
 
-def describe(doc):
+def describe(doc, now=None):
     """One line for `te status`: what the import did here."""
     if not doc:
         return None
     state = doc.get("state")
     n = int(_num(doc.get("imported")))
     origins = doc.get("origins") if isinstance(doc.get("origins"), dict) else {}
+    left = doc.get("left")
+    togo = f"{left} to go" if isinstance(left, int) else "none planned yet"
     if state == "done":
         return f"read {n} earlier session(s) from {_labels(origins)}"
+    why = stalled(doc, now)
+    if why:
+        return (f"stalled: the import stopped before it finished ({why}); {n} session(s) read, "
+                f"{togo}. The next session start here, or `te history import`, resumes it; "
+                f"until then sessions that end here wait to be folded")
+    if state == "partial":
+        return (f"waiting to resume: {n} session(s) read, {togo}; the next session start here "
+                f"resumes it, and sessions ending meanwhile are folded after it")
     if state in fold.HISTORY_BLOCKING:
-        return (f"reading the agents' history: {n} session(s) so far, {doc.get('left', '?')} "
-                f"to go; sessions ending meanwhile are folded after it")
+        return (f"reading the agents' history: {n} session(s) so far, {togo}; sessions ending "
+                f"meanwhile are folded after it")
     if state == "skipped":
         return f"not read ({doc.get('reason') or 'skipped'})"
     if state == "stopped":
@@ -870,10 +1025,14 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
     groups = repositories(root, env, cfg, heads=heads)
     order = sorted(groups.values(), key=lambda g: -g["newest"])
     totals = {"repos": len(order), "stores": 0, "imported": 0, "dry_run": dry_run}
+    seen = set()
     for g in order:
-        for name in sorted(g["hosts"]):
+        # An agent that ran no session there itself can hold an import too (of the others'
+        # sessions), left blocking by a run that stopped: resumed here as well.
+        for name in sorted(g["hosts"] | _blocked_hosts(root, g["repo"].key)):
             totals["stores"] += 1
             ctx = build(_hosts.HOSTS[name](), g["repo"].root)
+            seen.add(os.path.realpath(ctx.store.base))
             if dry_run:
                 p = plan(ctx, heads=heads, cache=cache)
                 _say(log, f"{g['repo'].label} [{name}]: {len(p['sessions'])} session(s) would "
@@ -881,16 +1040,79 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
                               f"{k} {v}" for k, v in sorted(p["skipped"].items()))
                                         if p["skipped"] else ""))
                 continue
-            doc = read_state(ctx) or {}
-            if doc.get("state") in fold.HISTORY_BLOCKING and not _stale(doc, time.time()):
+            # A saved plan (a run stopped by its budget, or one that stalled) is kept and
+            # resumed; else a new one.
+            doc, why = claim(ctx)
+            if why:
                 _say(log, f"{g['repo'].label} [{name}]: an import is running; left to it")
                 continue
-            # A saved plan (a run stopped by its budget) is kept and resumed; else a new one.
-            _save(ctx, dict(doc, state="running", heartbeat=time.time()))
             res = run(ctx, auto=True, log=log, heads=heads, cache=cache)
             if res.get("state") == "busy":
                 _save(ctx, doc)             # not left `running` by a run that never began
             totals["imported"] += int(_num(res.get("read")))
             _say(log, f"{g['repo'].label} [{name}]: {res['state']}, {res.get('read', 0)} "
                       f"session(s) read")
+    totals["settled"] = settle_orphans(root, seen, dry_run=dry_run, log=log)
     return totals
+
+
+def _blocked_hosts(root, key):
+    """The agents whose store of repository `key` holds an import that is running or waits."""
+    from . import repos as _repos
+    from .store import Store
+    repo_dir = os.path.join(_repos.repos_dir(root), key)
+    out = set()
+    for name in _repos._host_dirs(repo_dir):
+        doc = Store(os.path.join(repo_dir, name)).read(STATE)
+        if isinstance(doc, dict) and doc.get("state") in fold.HISTORY_BLOCKING:
+            out.add(name)
+    return out
+
+
+def settle_orphans(root, seen=(), dry_run=False, log=None, now=None):
+    """The stores, other than `seen`, whose import has stalled: no repository in the logs leads
+    to them (a deleted temporary directory, a checkout whose logs are gone), so no session start
+    there may ever come to resume it. Each is marked `stopped`, with the reason and its plan
+    kept for a later resume, so that it neither reads as running nor blocks live folds. Returns
+    how many (with `dry_run`, would be)."""
+    from . import repos as _repos
+    from .store import Store
+    seen = {os.path.realpath(p) for p in seen}
+    base = _repos.repos_dir(root)
+    try:
+        keys = sorted(os.listdir(base))
+    except OSError:
+        return 0
+    n = 0
+    for key in keys:
+        repo_dir = os.path.join(base, key)
+        for name in _repos._host_dirs(repo_dir):
+            d = os.path.join(repo_dir, name)
+            if os.path.realpath(d) in seen or not os.path.isfile(os.path.join(d, STATE)):
+                continue
+            st = Store(d)
+            doc = st.read(STATE)
+            if not stalled(doc, now):
+                continue
+            label = _repos.dir_label(repo_dir) or key
+            if dry_run:
+                n += 1
+                _say(log, f"{label} [{name}]: its import stalled ({stalled(doc, now)}); it would "
+                          f"be marked stopped")
+                continue
+            done = {}
+
+            def stop(doc):
+                why = stalled(doc, now)
+                if not why:
+                    return False
+                doc.update(state="stopped", at=time.time(), reason=(
+                    f"the import stopped before it finished ({why}), and no agent's history "
+                    f"leads to this repository any more; a session started there resumes it"))
+                done["why"] = why
+                return None
+            _update_store(st, stop, timeout=HISTORY_LOCK_S)
+            if done:
+                n += 1
+                _say(log, f"{label} [{name}]: its import stalled ({done['why']}); marked stopped")
+    return n

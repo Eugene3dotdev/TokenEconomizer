@@ -689,7 +689,10 @@ def cmd_history(args):
                               log=lambda line: print(line, flush=True))
         print(f"{res['repos']} repositor{'y' if res['repos'] == 1 else 'ies'} in the agents' "
               f"history, {res['stores']} store(s)"
-              + ("" if args.dry_run else f", {res['imported']} session(s) read"))
+              + ("" if args.dry_run else f", {res['imported']} session(s) read")
+              + (f", {res['settled']} stalled import(s) of repositories no log names "
+                 + ("would be " if args.dry_run else "") + "marked stopped"
+                 if res.get("settled") else ""))
         return 0
     if args.dry_run:
         p = history.plan(ctx)
@@ -709,12 +712,14 @@ def cmd_history(args):
     if _refuse_unwritable(ctx.store.base):
         return 1
     if not args.auto:
-        # By hand: a run, whatever the last one left (a saved plan is resumed).
-        doc = history.read_state(ctx) or {}
-        if doc.get("state") in fold.HISTORY_BLOCKING and not history._stale(doc, time.time()):
-            print(f"not imported: an import of {ctx.repo.label}'s history is running")
+        # By hand: a run, whatever the last one left (a saved plan is resumed), unless one is
+        # running; one that stalled is taken over.
+        doc, why = history.claim(ctx)
+        if why:
+            print(f"not imported: an import of {ctx.repo.label}'s history is running"
+                  if why == "running" else f"not imported: {ctx.repo.label}'s history state "
+                  f"is locked; try again")
             return 1
-        history._save(ctx, dict(doc, state="running", heartbeat=time.time()))
     res = history.run(ctx, auto=args.auto, log=lambda line: print(line, flush=True))
     if not args.auto and res["state"] == "busy":
         history._save(ctx, doc)         # not left `running` by a run that never began
