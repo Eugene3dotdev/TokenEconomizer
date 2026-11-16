@@ -1,0 +1,4 @@
+#!/bin/sh
+# Muse Code's SessionStart hook. Muse refuses two hooks that run the same file, so each event has
+# a launcher of its own; all of them run the one hook dispatcher.
+exec sh "${0%/*}/../scripts/te-hook" --host muse "$@"

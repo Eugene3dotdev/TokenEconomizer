@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "name": "tokeneconomizer",
+  "displayName": "TokenEconomizer",
+  "version": "0.1.0",
+  "description": "Learn repository facts from finished sessions and give them to later sessions at start; guard prompt-turns against failing loops.",
+  "compat": {
+    "source": "native",
+    "manifestDir": ".muse-plugin"
+  },
+  "capabilities": {
+    "skills": [],
+    "commands": [],
+    "hooks": [
+      {
+        "id": "tokeneconomizer-session-start",
+        "event": "SessionStart",
+        "command": [
+          "sh",
+          "muse/session-start"
+        ],
+        "timeoutMs": 60000
+      },
+      {
+        "id": "tokeneconomizer-user-prompt-submit",
+        "event": "UserPromptSubmit",
+        "command": [
+          "sh",
+          "muse/user-prompt-submit"
+        ],
+        "timeoutMs": 60000
+      },
+      {
+        "id": "tokeneconomizer-post-tool-use",
+        "event": "PostToolUse",
+        "command": [
+          "sh",
+          "muse/post-tool-use"
+        ],
+        "timeoutMs": 60000
+      },
+      {
+        "id": "tokeneconomizer-post-tool-use-failure",
+        "event": "PostToolUseFailure",
+        "command": [
+          "sh",
+          "muse/post-tool-use-failure"
+        ],
+        "timeoutMs": 60000
+      },
+      {
+        "id": "tokeneconomizer-stop",
+        "event": "Stop",
+        "command": [
+          "sh",
+          "muse/stop"
+        ],
+        "timeoutMs": 60000
+      },
+      {
+        "id": "tokeneconomizer-session-end",
+        "event": "SessionEnd",
+        "command": [
+          "sh",
+          "muse/session-end"
+        ],
+        "timeoutMs": 60000
+      }
+    ],
+    "mcpServers": [],
+    "reminders": []
+  }
+}
