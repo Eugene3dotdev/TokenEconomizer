@@ -1,0 +1,18 @@
+{
+  "name": "tokeneconomizer",
+  "version": "0.1.0",
+  "description": "Learn repository facts from finished sessions and give them to later sessions at start; guard prompt-turns against failing loops.",
+  "author": {
+    "name": "TokenEconomizer authors"
+  },
+  "repository": "https://github.com/microsoft/TokenEconomizer",
+  "license": "Apache-2.0",
+  "keywords": [
+    "cost",
+    "tokens",
+    "context",
+    "hooks",
+    "micro-skills",
+    "failure-loops"
+  ]
+}

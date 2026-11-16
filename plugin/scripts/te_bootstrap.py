@@ -18,6 +18,9 @@ The package is found, in order:
                                          `source` (the clone a local marketplace was added
                                          from), or Codex's own checkout of a git marketplace,
                                          `<CODEX_HOME>/.tmp/marketplaces/<marketplace>`;
+                                         Factory Droid's copy, under
+                                         `<factory home>/plugins/cache/`, likewise, from the
+                                         record in its `plugins/known_marketplaces/`;
   5. an installed package            -- `pip install` of the repository.
 
 When none has it, a hook answers `{}` as always, and says why once in the plugin's errors.log.
@@ -54,6 +57,36 @@ def _without_long_prefix(path):
     return path
 
 
+def _droid_marketplace_sources(home, market):
+    """For a Droid install copy (`<factory home>/plugins/cache/<marketplace>-<hash>/...`, 1.12.1),
+    the checkout its marketplace record names: `plugins/known_marketplaces/<name>-<hash>.json`,
+    whose file name is the cache folder's in lower case, holds `entry.source.path` (a local
+    marketplace) and `entry.installLocation` (Droid's clone of a git one). Droid's copy drops
+    the `lib` symlink, as Codex's does."""
+    import json
+    d = os.path.join(home, "plugins", "known_marketplaces")
+    try:
+        names = sorted(os.listdir(d))
+    except (IOError, OSError):
+        return []
+    out = []
+    for fname in names:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            rec = json.load(open(os.path.join(d, fname), encoding="utf-8"))
+            if fname[:-5].lower() != market.lower() and \
+                    str(rec.get("name") or "") != market.rsplit("-", 1)[0]:
+                continue
+            entry = rec.get("entry") or {}
+            source = entry.get("source") or {}
+            for cand in (source.get("path"), entry.get("installLocation")):
+                if cand and cand not in out:
+                    out.append(cand)
+        except (IOError, OSError, ValueError, AttributeError):
+            continue
+    return out
+
 def _marketplace_sources(plugin_root):
     """For a Codex install copy (`<home>/plugins/cache/<marketplace>/<plugin>/<version>`), the
     `source` its `config.toml` records for that marketplace (a local one), and the checkout Codex
@@ -77,6 +110,7 @@ def _marketplace_sources(plugin_root):
                 out.append(cand)
     except (IOError, OSError, ValueError, AttributeError):
         pass
+    out.extend(_droid_marketplace_sources(home, market))
     try:
         text = open(os.path.join(home, "config.toml"), encoding="utf-8", errors="replace").read()
     except (IOError, OSError):

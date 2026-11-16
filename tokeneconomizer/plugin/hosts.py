@@ -1064,6 +1064,78 @@ class Grok(Host):
         return trace.grok_session_usage(transcript_path)
 
 
+class Droid(Host):
+    """Factory Droid, through the plugin's own Droid manifest (`.factory-plugin/plugin.json`).
+    Verified on 1.12.1 (2026-11-16) in a disposable profile (`FACTORY_HOME_OVERRIDE`).
+
+    Droid speaks Claude Code's hook contract (snake_case payloads on stdin, `hookSpecificOutput`
+    on stdout), with these differences:
+
+      * It reads the plugin's `hooks/hooks.json`, Claude Code's file, and runs it with no
+        `--host`; `detect` tells it apart. A manifest `hooks` path adds a file rather than
+        replacing that one, so there is no Droid-only hook file. Droid names the one event it
+        lacks (`PostToolUseFailure`) in a warning and runs the others.
+      * A payload carries `session_id`, `transcript_path` (`<factory home>/sessions/<cwd
+        slug>/<id>.jsonl`, the log `trace.droid` reads), `cwd`, `permission_mode` (`off`,
+        `spec`, `auto-low`, `auto-medium`, `auto-high`) and `hook_event_name`; SessionStart
+        adds `source` (`startup`, `resume`, `clear`, `compact`), SessionEnd `reason`. The
+        hook environment has `FACTORY_PROJECT_DIR`; the tool shell has `FACTORY_SESSION_ID`.
+      * `UserPromptSubmit` names the prompt's message (`message_id`), the turn's identity.
+      * There is no `PostToolUseFailure`, and `PostToolUse` does not come for a shell command
+        that failed (exit 127 seen), so the live loop guard sees only the calls that succeeded.
+        A cancelled turn sends `Notification`, not `Stop`; the next prompt closes it.
+      * Tools have Droid's names (`Execute`, `Create`, `ApplyPatch`); `trace.droid_tool` maps
+        them, and a shell result's exit status is read from its `[Process exited with code N]`
+        line where it has one.
+      * No side calls (`sidecall.NO_SIDE_CALLS`).
+    """
+    name = "droid"
+    prompt_context = True              # documented: UserPromptSubmit additionalContext is added
+    interrupt = "Press Esc to interrupt it."
+    end_run = "Press Ctrl+C to end the run."
+    PERMISSION_MODES = frozenset({"off", "spec", "auto-low", "auto-medium", "auto-high"})
+    _EXIT_RE = re.compile(r"\[Process exited with code (-?\d+)\]")
+
+    def cwd(self, p, env):
+        return (p.get("cwd") or env.get("FACTORY_PROJECT_DIR") or env.get("DROID_PROJECT_DIR")
+                or os.getcwd())
+
+    def env_session_id(self, env):
+        return str(env.get("TE_SESSION_ID") or env.get("FACTORY_SESSION_ID") or "")
+
+    def turn_key(self, p):
+        if p.get("hook_event_name") != "UserPromptSubmit":
+            return ""
+        return str(p.get("message_id") or "")
+
+    def tool_call(self, p):
+        name, args = trace.droid_tool(str(p.get("tool_name") or ""), p.get("tool_input"))
+        resp = p.get("tool_response")
+        text = response_text(resp)
+        code = _exit_code(resp)
+        if code is None:
+            m = self._EXIT_RE.search(text[-400:])
+            if m:
+                code = int(m.group(1))
+        return name, args, text, code
+
+    def headless(self, env, transcript=None):
+        # `droid exec` hands its hooks the same payload and environment as the terminal UI; its
+        # command line is what differs. Asked only when a notice is written.
+        return any(_DROID_EXEC.search(a) for a in _ancestor_args())
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "droid_trace.jsonl")
+        n = trace.droid_session_to_claude(transcript_path, out) if transcript_path else None
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.droid_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.droid_session_usage(transcript_path)
+
+
 def copilot_home(env=None):
     env = os.environ if env is None else env
     return env.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")
@@ -1130,6 +1202,7 @@ class Copilot(Host):
             time.sleep(0.25)
 
 
+_DROID_EXEC = re.compile(r"(?:^|[\s/])droid(?:\.\w+)?\s+exec(?:\s|$)")
 _PROMPT_FLAG = re.compile(r"\s(?:-p|--prompt)(?:[\s=]|$)")
 
 
@@ -1157,7 +1230,7 @@ def _ancestor_args(limit=4):
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode,
          "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity}
+         "antigravity": Antigravity, "droid": Droid}
 
 
 def default_host(env=None, recent=None):
@@ -1176,6 +1249,8 @@ def default_host(env=None, recent=None):
         return "cursor"
     if env.get("GROK_SESSION_ID"):
         return "grok"
+    if env.get("FACTORY_SESSION_ID"):          # Droid's tool shell (1.12.1)
+        return "droid"
     return recent if recent in HOSTS else "claude"
 
 
@@ -1201,6 +1276,11 @@ def detect(payload, env=None, hint=None):
         return Codex()
     if "/session-state/" in sp and tp.endswith("events.jsonl"):
         return Copilot()
+    # Droid runs Claude Code's plugin hook file, with no `--host`: it keeps its sessions under
+    # `.factory/sessions` and names permission modes Claude Code has none of (1.12.1).
+    if ("/.factory/sessions/" in sp
+            or str((payload or {}).get("permission_mode") or "") in Droid.PERMISSION_MODES):
+        return Droid()
     # Claude Code always sends a transcript path; Copilot sends none before Stop, and marks its
     # hook processes. (Hooks inherit the parent's environment, so the marker alone would also
     # tag a Claude Code session started from inside Copilot -- hence the transcript test first.)

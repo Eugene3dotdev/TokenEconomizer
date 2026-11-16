@@ -9,7 +9,6 @@ here and nowhere else:
   * `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
                   `opencode`, `pi` -- each agent's own session file: usage, metadata,
                   prompt-turns, and the conversions that let the readers above handle it.
-                  `droid` (Factory Droid) is read as history only: the plugin runs no hooks there.
 
 Stdlib only.
 """
@@ -32,7 +31,8 @@ from .antigravity import (antigravity_prompt_count, antigravity_read,
                           antigravity_session_to_claude, antigravity_session_usage)
 from .cursor import cursor_events_to_claude, cursor_prompt_count
 from .droid import (droid_history_logs, droid_log_head, droid_prompt_count,
-                    droid_session_to_claude, droid_session_usage, droid_sessions_dir)
+                    droid_session_to_claude, droid_session_usage, droid_sessions_dir,
+                    droid_tool)
 from .grok import (grok_json_reply, grok_prompt_count, grok_result, grok_session_to_claude,
                    grok_session_usage, grok_tool)
 from .hermes import (hermes_export, hermes_find_session, hermes_prompt_count, hermes_result,
@@ -61,7 +61,7 @@ __all__ = [
     "antigravity_session_usage",
     "cursor_events_to_claude", "cursor_prompt_count",
     "droid_history_logs", "droid_log_head", "droid_prompt_count", "droid_session_to_claude",
-    "droid_session_usage", "droid_sessions_dir",
+    "droid_session_usage", "droid_sessions_dir", "droid_tool",
     "grok_json_reply", "grok_prompt_count", "grok_result", "grok_session_to_claude",
     "grok_session_usage", "grok_tool",
     "hermes_export", "hermes_find_session", "hermes_prompt_count", "hermes_result",

@@ -20,8 +20,8 @@ Invariants every source keeps:
 prompt it says little about the person's own sessions, and the plan leaves it out.
 
 Sources are registered by name in `SOURCES`; a `Host` of the same name is the agent the plugin
-runs hooks in. An agent can have a source and no host (Factory Droid): its sessions teach every
-other agent's store for the repository, and it has no store of its own.
+runs hooks in; a source without one teaches every other agent's store for the repository and
+has no store of its own.
 """
 import json
 import os
@@ -682,13 +682,13 @@ class OpenCodeSource(Source):
         return _opencode.opencode_session_usage(path)
 
 
-# ---- Factory Droid (history only; the plugin runs no hooks there) --------------------------
+# ---- Factory Droid ----------------------------------------------------------------------------
 class DroidSource(Source):
     name, label = "droid", "Factory Droid"
 
     def logs(self, env, extra_dirs=()):
         env = os.environ if env is None else env
-        if not env.get("FACTORY_HOME") and not _home(env):
+        if not (env.get("FACTORY_HOME") or env.get("FACTORY_HOME_OVERRIDE")) and not _home(env):
             return []
         out = []
         for folder, path, mtime, size in _droid.droid_history_logs(_droid.droid_sessions_dir(env)):

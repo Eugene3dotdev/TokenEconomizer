@@ -1,14 +1,14 @@
 # TokenEconomizer plugin
 
 How to install and use TokenEconomizer in Claude Code, Codex, the GitHub Copilot CLI, Pi, Cursor
-(experimental), Grok Build (experimental), opencode (experimental), Hermes Agent (experimental)
-and the Antigravity CLI (experimental). What the plugin does and why is in the [main README](../README.md); its
+(experimental), Grok Build (experimental), opencode (experimental), Hermes Agent (experimental),
+the Antigravity CLI (experimental) and Factory Droid (experimental). What the plugin does and why is in the [main README](../README.md); its
 design and the verified behaviour of each agent are in [`docs/PLUGIN.md`](../docs/PLUGIN.md).
 
 - [Before you start](#before-you-start)
 - Install and use it on [Claude Code](#claude-code) · [Codex](#codex) ·
   [Copilot CLI](#copilot-cli) · [Pi](#pi) · [Cursor](#cursor) · [Grok Build](#grok-build) · [opencode](#opencode) ·
-  [Hermes Agent](#hermes-agent) · [Antigravity CLI](#antigravity-cli)
+  [Hermes Agent](#hermes-agent) · [Antigravity CLI](#antigravity-cli) · [Factory Droid](#factory-droid)
 - [What to expect](#what-to-expect) · [Commands](#commands) · [Settings](#settings)
 - [Repository map](#repository-map) · [Using with rtk](#using-with-rtk) ·
   [Model calls and API keys](#model-calls-and-api-keys) · [Troubleshooting](#troubleshooting)
@@ -584,6 +584,37 @@ is off by default: `te --host antigravity config set microskills=envfacts`.
   proposer never runs, and the loop guard, which needs a judge's verdict to act, never redirects
   a turn.
 
+## Factory Droid
+
+Experimental: **micro-skills and the loop guard**, checked on Droid 1.12.1 without a model call.
+
+**1. Install.** Add this checkout as a Droid marketplace and install the plugin from it:
+
+```bash
+droid plugin marketplace add /path/to/TokenEconomizer
+droid plugin install tokeneconomizer@TokenEconomizer --scope user
+```
+
+The marketplace takes the checkout's directory name (`droid plugin marketplace list` shows it).
+Droid's copy of the plugin leaves out the `lib` link, so the plugin finds the package in the
+checkout the marketplace was added from; keep that checkout in place.
+
+**2. Check it.** Run a session, then `~/.tokeneconomizer/bin/te --host droid status` in the
+repository; inside a Droid session's shell, `te` knows it is Droid without `--host`.
+
+**How it works, and what it does not do.**
+
+- Droid runs the plugin's Claude Code hook file. It warns once per run that `PostToolUseFailure`
+  is not a Droid event, and runs the rest.
+- Droid has no `PostToolUseFailure`, and sends no `PostToolUse` for a shell command that failed,
+  so the loop guard sees only the calls that succeeded until the session is folded.
+- The plugin makes no model call through `droid`: `droid exec` cannot run a prompt with every tool
+  off, and such a call's prompt holds text a repository controls. So micro-skills' paid proposer
+  never runs, and the loop guard, which needs a judge's verdict to act, redirects a turn only at
+  its backstop.
+- Droid's session logs record no token usage, so its sessions are unpriced. Tool pruning is not
+  available.
+
 ## What to expect
 
 The plugin works session by session: what it learns from a repository's earlier sessions is
@@ -669,6 +700,7 @@ How to run them:
 | Grok Build | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host grok <command>` |
 | Hermes Agent | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host hermes <command>` |
 | Antigravity CLI | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host antigravity <command>` |
+| Factory Droid | none (run from a terminal or its shell) | `~/.tokeneconomizer/bin/te --host droid <command>` |
 
 `doctor`, `history` and `repomap` run from a terminal (or as `/te …` on Pi); there is no slash command or
 Codex skill for them.
@@ -770,7 +802,7 @@ sessions' logs: Claude Code (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`
 (`~/.codex/sessions/`, and an OpenClaw agent's embedded Codex home), the Copilot CLI
 (`~/.copilot/session-state/`), Pi (`~/.pi/agent/sessions/`), Grok Build (`~/.grok/sessions/`),
 Hermes (`~/.hermes/state.db`), opencode (`~/.local/share/opencode/opencode.db`) and Factory
-Droid (`~/.factory/sessions/`, read as history only: the plugin runs no hooks in Droid). With
+Droid (`~/.factory/sessions/`). With
 `history_import` on (the default), the first session start in a repository reads that
 repository's sessions from all of them, in a background `te history import`, oldest first and
 each once, without any model call; later session starts catch up on the other agents' sessions
