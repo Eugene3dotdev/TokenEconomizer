@@ -69,8 +69,8 @@ mechanisms:
   itself.
 
 TokenEconomizer is a plugin for **Claude Code**, **Codex**, the **GitHub Copilot CLI** and **Pi**,
-with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent** and
-the **Antigravity CLI**. Each italic
+with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent**,
+the **Antigravity CLI** and **Factory Droid**. Each italic
 letter above is a setting, shown with its default ([Settings](#settings)), and each mechanism can be turned on or
 off. The plugin announces each action in one line, and if any part of it fails, your session
 carries on as if it were not installed. Its model calls (the fact proposer, and the judge with the
@@ -213,6 +213,17 @@ and tool pruning is not available. macOS and Linux only:
 on Windows `agy` runs hook commands through `cmd /c`, and this plugin's launcher is a POSIX shell
 script. See [its limits](plugin/README.md#antigravity-cli).
 
+**Factory Droid** (experimental; micro-skills and the loop guard, with no model calls)
+
+```sh
+droid plugin marketplace add /path/to/TokenEconomizer
+droid plugin install tokeneconomizer@TokenEconomizer --scope user
+```
+
+The marketplace is named after the clone's directory (`droid plugin marketplace list`). Start
+`droid` in a repository, then check with `~/.tokeneconomizer/bin/te --host droid status`. Droid
+runs the Claude Code hook file and warns that it has no `PostToolUseFailure` event. See
+[its limits](plugin/README.md#factory-droid).
 **opencode** (experimental)
 
 ```sh
@@ -263,6 +274,7 @@ To update:
 | Claude Code, Copilot CLI, opencode | `git pull` in the clone |
 | Hermes Agent | `git pull` in the clone, then `hermes gateway restart` |
 | Antigravity CLI | build the bundle again and `agy plugin install` it |
+| Factory Droid | `git pull` in the clone, whose package the plugin runs; Droid's copy of the hook file changes only with `droid plugin update` (not yet checked) |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
 
@@ -282,6 +294,7 @@ uninstalling, using Copilot with your own model key, and troubleshooting.
 | opencode (experimental) | 1.19.5 and 2.2.0 | not tested |
 | Hermes Agent (experimental) | 0.22.5 | not tested |
 | Antigravity CLI (experimental) | agy 1.5.1, macOS and Linux | not tested |
+| Factory Droid (experimental) | 1.12.1, Linux, without a model call | not tested |
 
 The commands above were tested on the oldest and newest version in each range; newer versions
 have not been tested yet.
@@ -310,6 +323,10 @@ have not been tested yet.
   not. Its other surfaces (the Ink TUI, the Desktop app, messaging platforms, cron) and
   subagents are ignored, and tool pruning is not available. See
   [its limits](plugin/README.md#hermes-agent).
+- **Factory Droid** support is experimental: on 1.12.1 the plugin's install, its hooks running,
+  the session-start reply and the fold at session end were checked in a disposable profile with no
+  model call; that the facts reach Droid's model, and the loop guard in a live turn, were not.
+  The plugin makes no model call through `droid`. See [its limits](plugin/README.md#factory-droid).
 
 ### Everyday commands
 
@@ -326,13 +343,14 @@ commands. They have the same names on every agent; only the way you type them di
 | Grok Build | from a terminal: `~/.tokeneconomizer/bin/te --host grok <command>` |
 | Hermes Agent | from a terminal: `~/.tokeneconomizer/bin/te --host hermes <command>` |
 | Antigravity CLI | from a terminal: `~/.tokeneconomizer/bin/te --host antigravity <command>` |
+| Factory Droid | from a terminal or Droid's shell: `~/.tokeneconomizer/bin/te --host droid <command>` |
 | a terminal, in the repository | `~/.tokeneconomizer/bin/te <command>` |
 
 | Command | What it does |
 |---|---|
 | `status` | what it learned and did here, and what your sessions cost |
 | `microskills` | the facts it injects, and those still forming |
-| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent or the Antigravity CLI) |
+| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent, the Antigravity CLI or Factory Droid) |
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |
@@ -420,6 +438,7 @@ what it can leave out differs:
 | opencode | nothing yet | — |
 | Hermes Agent | nothing yet | — |
 | Antigravity CLI | nothing yet | — |
+| Factory Droid | nothing yet | — |
 
 Tool pruning adds only its own entries and never touches deny rules you wrote; a settings file it
 creates is kept out of git (`.git/info/exclude`). On Claude Code, the session-start line that says

@@ -1,4 +1,4 @@
-"""Factory Droid's session log, read as history only (the plugin runs no hooks in Droid).
+"""Factory Droid's session log, for the live fold of a Droid session and for history.
 
 Droid keeps one file per session, `~/.factory/sessions/<folder>/<session id>.jsonl`, where
 `<folder>` is the working directory with every character that is not a letter or a digit turned
@@ -16,6 +16,10 @@ Droid 1.5.0 logs written 2026-11-03 to 2026-11-05:
   * Droid injects context as `user` entries of its own: their `id` starts with `context-`
     (tool catalog updates, system reminders) or `repl-tool-result:` (a result of a tool the
     model ran inside its `Script` tool). Neither is a prompt the person typed.
+
+Droid 1.12.1 (2026-11-16) also logs each hook run as a `user` entry naming its
+`hookEventName`, and a hook's warning as one with `systemNotice` set and the text
+"[Hook Warning] ..."; neither is a prompt either.
 
 `droid_session_to_claude` rewraps each conversation entry as a Claude Code transcript line, with
 Droid's tool names in Claude Code's vocabulary (`droid_tool`), so every reader built for Claude
@@ -64,9 +68,13 @@ def droid_tool(name, args):
 
 
 def droid_sessions_dir(env=None):
-    """Where Droid keeps its session logs: `$FACTORY_HOME/sessions`, else `~/.factory/sessions`."""
+    """Where Droid keeps its session logs: `$FACTORY_HOME/sessions`, else
+    `$FACTORY_HOME_OVERRIDE/.factory/sessions` (the home Droid 1.12.1 itself takes in place of
+    `~`), else `~/.factory/sessions`."""
     env = os.environ if env is None else env
     base = env.get("FACTORY_HOME")
+    if not base and env.get("FACTORY_HOME_OVERRIDE"):
+        base = os.path.join(env["FACTORY_HOME_OVERRIDE"], ".factory")
     if not base:
         home = env.get("HOME") if os.name != "nt" else env.get("USERPROFILE")
         base = os.path.join(home or os.path.expanduser("~"), ".factory")
@@ -122,7 +130,7 @@ def _is_prompt(ev):
     if ev.get("type") != "message" or _injected(ev):
         return False
     msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
-    if msg.get("role") != "user":
+    if msg.get("role") != "user" or msg.get("systemNotice") or msg.get("hookEventName"):
         return False
     content = msg.get("content")
     if isinstance(content, str):

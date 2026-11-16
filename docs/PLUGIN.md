@@ -1,7 +1,7 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent and Antigravity CLI sessions, through the hooks (on Pi, the extension events) each agent
+opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI and Factory Droid sessions, through the hooks (on Pi, the extension events) each agent
 exposes: what it does at each hook, what differs from the experiments and why, the agent
 behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
 the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
@@ -696,6 +696,39 @@ was not.)
   enabled), and `--resume` delivery of the start context.
 * **Side call, verified on 1.0.70.** With the side call's flags, the run's recorded tool list held
   only `read_file`, and a prompt asking it to create a file left none.
+
+**Factory Droid 1.12.1 -- checked 2026-11-16** in a disposable profile (`FACTORY_HOME_OVERRIDE`
+pointing at a temporary directory, no credentials), from Droid's docs (`docs.factory.com`,
+`harness/plugins.md` and `hooks.md`) and its own output. Without credentials `droid exec` stops
+at authentication, after `SessionStart` and before any model call; its `SessionEnd` still runs.
+* **Install.** `droid plugin marketplace add <checkout>` reads `.factory-plugin/marketplace.json`,
+  registers it under the checkout's directory name, and `droid plugin install
+  tokeneconomizer@<that name> --scope user` copies the plugin directory, with its working-tree
+  contents, to `<factory home>/plugins/cache/<marketplace>-<hash>/<plugin>-<hash>/<version>`. The
+  copy has no symlinks, so `lib/` is empty; `scripts/te_bootstrap.py` finds the package in the
+  checkout that `plugins/known_marketplaces/<marketplace>-<hash>.json` records (`entry.source.path`,
+  `entry.installLocation`).
+* **Hook file.** Droid reads `hooks/hooks.json`, Claude Code's file, and expands
+  `${CLAUDE_PLUGIN_ROOT}`. It warns that `PostToolUseFailure` "is not supported by Droid" (on
+  stderr in `droid exec`, and in `droid plugin list`) and runs the other events. A manifest
+  `hooks` path is read beside `hooks/hooks.json`, not instead of it, so a Droid-only file would
+  run every hook twice; there is none.
+* **Payloads.** Claude Code's fields: `session_id`, `transcript_path` (`<factory
+  home>/sessions/<cwd slug>/<id>.jsonl`), `cwd`, `permission_mode` (`auto-low` here; Droid's
+  modes are its own), `hook_event_name`, with `source` on `SessionStart` and `reason`,
+  `session_duration_ms` and `message_count` on `SessionEnd`. The hook environment has
+  `FACTORY_PROJECT_DIR`, `DROID_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`; the tool shell has
+  `FACTORY_SESSION_ID`. The plugin tells Droid from Claude Code by the transcript's directory or
+  the permission mode (`hosts.detect`).
+* **Observed through the plugin.** `te-hook` ran from the install copy, recorded the session under
+  the `droid` host, answered `SessionStart` with `hookSpecificOutput.additionalContext` (Droid
+  logged the reply in the session's hook row), and folded the session at `SessionEnd`.
+* **Not observed.** That the start context reaches the model (documented, not checked without a
+  model call), `UserPromptSubmit` and tool events, resume, and slash commands. An earlier check of
+  Droid's hooks (the same version) saw no `PostToolUse` for a shell command that failed.
+* **Side calls: none** (`sidecall.NO_SIDE_CALLS`). `droid exec` refuses an empty tool list, and its
+  default read-only autonomy keeps Read, Grep, LS, FetchUrl and WebSearch; `--only-tools TodoWrite`
+  leaves only its planning tool, which is untried as a completion.
 
 ## 4. State and privacy
 

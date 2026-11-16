@@ -40,6 +40,11 @@ so no extra API key is needed and the call is billed where the session is:
   * Antigravity: none. `agy` has no option that runs a turn without tools, and a side call's
     prompt holds text a repository controls, so its micro-skills keep to the LLM-free facts and
     its loop guard never asks a judge (`NO_SIDE_CALLS`).
+  * Factory Droid: none, for the same reason. `droid exec` refuses an empty tool list
+    (`--only-tools ""`: "Expected at least one tool ID", 1.12.1), and its default read-only
+    autonomy still offers Read, Grep, LS, FetchUrl and WebSearch. `--only-tools TodoWrite`
+    leaves only its planning tool (`--list-tools`, no model call), a possible route once a run
+    on a model the person chooses has shown its reply and usage (`NO_SIDE_CALLS`).
   * Hermes: `hermes chat -Q --oneshot --source tool --ignore-rules --max-turns 1 -t bot_room` on
     the person's default model. Never `hermes -z`, which auto-approves dangerous commands: a side
     call's prompt holds text a repository controls, and this form offers it no tool. See
@@ -740,11 +745,11 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 
 
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
-NO_SIDE_CALLS = frozenset({"antigravity"})
+NO_SIDE_CALLS = frozenset({"antigravity", "droid"})
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "opencode": "opencode run", "cursor": "cursor-agent -p",
-          "hermes": "hermes chat"}
+          "hermes": "hermes chat", "droid": "droid exec"}
 
 
 def call_name(host_name):

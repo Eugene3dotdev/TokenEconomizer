@@ -597,7 +597,7 @@ def test_import_all_reads_every_repository_into_each_agent_that_ran_there(
     history_log(home / ".claude", repo, "c1", trap(repo, 1), age_s=7200)
     codex_log(home, repo, SID["codex"], 0, age_s=3600)
     pi_log(home, str(other), SID["pi"], 2, age_s=3600)
-    droid_log(home, str(other), "droid-1", 3, age_s=1800)      # no store of its own
+    droid_log(home, str(other), "droid-1", 3, age_s=1800)
     gone = tmp_path / "gone"
     gone.mkdir()
     history_log(home / ".claude", str(gone), "g1", trap(str(gone), 1), age_s=3600)
@@ -607,13 +607,14 @@ def test_import_all_reads_every_repository_into_each_agent_that_ran_there(
     assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "2 repositories" in out and "acme/widget [claude]: 2 session(s)" in out
-    assert "acme/gadget [pi]: 2 session(s)" in out and "[droid]" not in out
+    assert "acme/gadget [pi]: 2 session(s)" in out and "acme/gadget [droid]: 2 session(s)" in out
     assert store_for(env, repo).read("history.json") is None
     assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all"]) == 0
-    assert "3 store(s), 6 session(s) read" in capsys.readouterr().out
+    assert "4 store(s), 8 session(s) read" in capsys.readouterr().out
     assert ledger_ids(store_for(env, repo)) == ["c1", f"codex:{SID['codex']}"]
     assert ledger_ids(store_for(env, repo, host="codex")) == ["claude:c1", SID["codex"]]
     assert ledger_ids(store_for(env, str(other), host="pi")) == [SID["pi"], "droid:droid-1"]
+    assert ledger_ids(store_for(env, str(other), host="droid")) == [f"pi:{SID['pi']}", "droid-1"]
     assert not os.path.isdir(store_for(env, str(other), host="claude").base)
     assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all"]) == 0
     assert "0 session(s) read" in capsys.readouterr().out
