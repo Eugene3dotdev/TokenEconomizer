@@ -319,6 +319,9 @@ have not been tested yet.
 - **Pi 0.99.x**: instead of `pi install`, clone the repository and start each session with
   `pi --extension /path/to/TokenEconomizer/plugin/pi/tokeneconomizer.ts`, using your clone's
   full path; `git pull` in the clone updates it.
+- **Pi 0.79.x** has no system-prompt sections, so the extension appends its section to the
+  prompt it is given instead; checked once, with `pi install` from a clone and one `pi -p`
+  turn on 0.79.1 (2026-11-16). Resumed sessions there were not checked.
 - **opencode** support is experimental: it was tested on 1.19.5 and 2.2.0 only, and not in the
   2.x terminal UI.
 - **Cursor Agent** support is experimental. Cursor 3.24.9 loaded the local plugin. On
