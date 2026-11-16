@@ -192,6 +192,28 @@ def droid_log(home, cwd, sid, i, age_s=3600):
     return _age(str(path), age_s)
 
 
+def amp_copy(home, cwd, sid, i, age_s=3600):
+    """The plugin's copy of an Amp thread (Amp keeps none on the machine), in the state root
+    the `env` fixture names."""
+    d = home.parent / "te" / "amp-threads"
+    d.mkdir(parents=True, exist_ok=True)
+    t = time.time() - age_s - 300
+    lines = [{"type": "thread", "id": sid, "cwd": cwd, "created": int(t * 1000),
+              "mode": "interactive"},
+             {"type": "message", "role": "user", "id": "M-u",
+              "content": [{"type": "text", "text": f"fix bug {i}"}]}]
+    for n, (name, args, out, failed) in enumerate(trap_calls(cwd, i)):
+        lines.append({"type": "message", "role": "assistant", "id": f"M-a{n}", "content": [
+            {"type": "tool_use", "id": f"call_{n}", "name": "shell_command",
+             "input": dict(args, workdir=cwd)}]})
+        lines.append({"type": "message", "role": "user", "id": f"M-r{n}", "content": [
+            {"type": "tool_result", "toolUseID": f"call_{n}", "status": "done",
+             "output": {"output": out, "exitCode": 127 if failed else 0}}]})
+    path = d / f"{sid}.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return _age(str(path), age_s)
+
+
 def hermes_db(home, sessions):
     """`state.db` with the tables the reader uses; `sessions` is [(sid, cwd, age_s, source)]."""
     db = home / ".hermes" / "state.db"
@@ -349,10 +371,13 @@ def _write(name, home, cwd, sid, i=0, age_s=3600):
         return hermes_db(home, [(sid, cwd, age_s, "cli")])
     if name == "opencode":
         return opencode_db(home, [(sid, cwd, age_s)])
+    if name == "amp":
+        return amp_copy(home, cwd, sid, i, age_s)
     raise AssertionError(name)
 
 
-SID = {"codex": "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b7a", "pi": "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b7b"}
+SID = {"codex": "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b7a", "pi": "0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b7b",
+       "amp": "T-0b6f3c2e-6a4f-4c39-9b55-1f2d9d1c3b7c"}
 
 
 @pytest.mark.parametrize("name", sorted(sources.SOURCES))
@@ -451,6 +476,16 @@ def test_the_first_start_in_a_repository_reads_every_agents_sessions_oldest_firs
     assert CLAIM in second["hookSpecificOutput"]["additionalContext"]
     assert ("read 4 earlier session(s) of acme/widget from Claude Code, Codex, Factory Droid "
             "and Pi history.") in second["systemMessage"]
+
+
+def test_an_amp_thread_the_plugin_copied_teaches_another_agents_store(env, home, repo, tmp_path):
+    """Amp keeps no thread on the machine; the copy its plugin wrote is history for the other
+    agents in the same repository, as Pi's or Codex's own logs are."""
+    amp_copy(home, repo, SID["amp"], 0, age_s=3600)
+    start_hook(env, repo, "new1", tmp_path)
+    st = store_for(env, repo)
+    assert ledger_ids(st) == [f"amp:{SID['amp']}"]
+    assert st.read("history.json")["origins"] == {"amp": 1}
 
 
 def test_the_newest_cap_counts_own_and_foreign_sessions_separately(env, home, repo):

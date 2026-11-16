@@ -8,6 +8,7 @@ session as an ordered list of `(tool_name, args, result_text, success)` calls th
 |---|---|
 | `calls.py` | `load_trajectory` (format sniffed per file), `call_cwds`, `tool_usage`, `strip_rtk_prefix` |
 | `catalog.py` | the tool list a session loaded, from whichever source the agent publishes |
+| `amp.py` | Amp threads: the plugin's copy of a thread or an `amp threads export`, written as a Claude transcript; prompts and usage (Amp keeps no thread on the machine) |
 | `antigravity.py` | Antigravity CLI (`agy`) transcripts: results paired with their calls, read whole by the fold and a few steps at a time by the hook; usage |
 | `claude.py` | Claude Code transcripts: calls with the shell's directory, usage by message id, subagents, deferred tools |
 | `codex.py` | `codex exec --json` streams; a session's rollout file, converted to that stream; usage |
