@@ -265,3 +265,76 @@ def test_a_hook_whose_transcript_links_into_an_excluded_directory_does_nothing(
     assert call(env, {"hook_event_name": "SessionStart", "session_id": "s1", "cwd": repo,
                       "transcript_path": str(link)}) == {}
     assert not os.path.isdir(store_for(env, repo).base)
+
+
+def _connected(monkeypatch):
+    """The real path of every database file opened from here on."""
+    import sqlite3
+    from urllib.parse import unquote, urlparse
+    opened, real_connect = [], sqlite3.connect
+
+    def spy(database, *a, **k):
+        p = str(database)
+        if k.get("uri") or p.startswith("file:"):
+            p = unquote(urlparse(p).path)
+        opened.append(os.path.realpath(p))
+        return real_connect(database, *a, **k)
+    monkeypatch.setattr(sqlite3, "connect", spy)
+    return opened
+
+
+def _database_at(name, home, repo):
+    import test_history_sources as ths
+    if name == "hermes":
+        return ths.hermes_db(home, [("h-1", repo, 3600, "cli")])
+    if name == "opencode":
+        return ths.opencode_db(home, [("o-1", repo, 3600)])
+    return ths.zeroclaw_db(home, [("z-1", repo, 3600)])
+
+
+@pytest.mark.parametrize("name", ["hermes", "opencode", "zeroclaw"])
+@pytest.mark.parametrize("linked", [False, True])
+def test_a_session_database_in_an_excluded_directory_is_never_opened(
+        name, linked, env, home, repo, tmp_path, monkeypatch):
+    """The verifier's database case: the agent's store is a link to a file in Family. The import
+    must not open it at all, not even to list its rows; the same store where it belongs is read."""
+    db = _database_at(name, home, repo)
+    family = home / "Documents" / "Family"
+    if linked:
+        family.mkdir(parents=True)
+        target = family / os.path.basename(db)
+        os.replace(db, target)
+        os.symlink(target, db)
+    opened = _connected(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all"]) == 0
+    if linked:
+        assert not any(p.startswith(str(family)) for p in opened), opened
+        assert not any(os.path.realpath(p).startswith(str(family)) for p in cache_of(env))
+    else:
+        assert os.path.realpath(db) in opened
+        assert any(p.startswith(db + "#") for p in cache_of(env))
+
+
+@pytest.mark.parametrize("name", ["hermes", "zeroclaw"])
+def test_a_live_fold_does_not_export_from_a_store_in_an_excluded_directory(
+        name, home, tmp_path, monkeypatch):
+    family = home / "Documents" / "Family"
+    (family / "data" / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("TOKENECONOMIZER_HOME", str(tmp_path / "te"))
+    calls = []
+    monkeypatch.setattr(trace, f"{name}_export", lambda *a, **k: calls.append(a) or True)
+    host = hosts.HOSTS[name]()
+    session = ({"hermes_home": str(family)} if name == "hermes"
+               else {"zeroclaw_config_dir": str(family)})
+    copy = str(tmp_path / "copy.json")
+    open(copy, "w").close()
+    assert host.complete(copy, "s-1", session=session) == copy
+    assert calls == []
+    ordinary = home / "agent"
+    (ordinary / "data" / "sessions").mkdir(parents=True)
+    host.complete(copy, "s-1", session={"hermes_home": str(ordinary),
+                                        "zeroclaw_config_dir": str(ordinary)})
+    assert len(calls) == 1

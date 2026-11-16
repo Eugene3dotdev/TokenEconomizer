@@ -9,7 +9,9 @@ plugin keys it. Nothing here imports the plugin.
 Invariants every source keeps:
 
   * `logs` touches directory listings and `stat` only, never a log's content; a store that is
-    not there yields nothing;
+    not there yields nothing. A database store is the exception, as its sessions are rows: it
+    is opened to list them, unless `skip` (a predicate the caller passes) says to leave that
+    file alone, which is then not opened at all;
   * `head` reads a log's first lines (or one database row), never the body;
   * `to_trace` writes only under the `workdir` it is given, and returns None for a log it
     cannot read, so that the caller counts it as unreadable rather than half-folds it;
@@ -99,10 +101,11 @@ class Source:
     name = "?"
     label = "?"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         """[{"id", "path", "mtime", "size"}] for every session log the agent keeps; `id` is
         the agent's own session id (unique within this source), `path` what `head` and
-        `to_trace` read (for a database, `<db path>#<row id>`)."""
+        `to_trace` read (for a database, `<db path>#<row id>`). `skip(path)`: True for a
+        database file not to open."""
         return []
 
     def head(self, path):
@@ -139,7 +142,7 @@ class Source:
 class ClaudeSource(Source):
     name, label = "claude", "Claude Code"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         env = os.environ if env is None else env
         if not env.get("CLAUDE_CONFIG_DIR") and not _home(env):
             return []
@@ -207,7 +210,7 @@ def codex_session_roots(env):
 class CodexSource(Source):
     name, label = "codex", "Codex"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         roots = codex_session_roots(env) + [os.path.expanduser(str(d)) for d in extra_dirs or ()
                                             if os.path.isdir(os.path.join(
                                                 os.path.expanduser(str(d)), "sessions"))
@@ -254,7 +257,7 @@ class CodexSource(Source):
 class CopilotSource(Source):
     name, label = "copilot", "Copilot CLI"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         base = _base(env, "COPILOT_HOME", ".copilot")
         if not base:
             return []
@@ -290,7 +293,7 @@ _PI_FILE_RE = re.compile(r"^(.+?)_([0-9a-fA-F-]{36})\.jsonl$")
 class PiSource(Source):
     name, label = "pi", "Pi"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         base = _base(env, "PI_CODING_AGENT_DIR", ".pi", "agent")
         if not base:
             return []
@@ -337,7 +340,7 @@ class GrokSource(Source):
     `trace.grok` reads; the directory name is the session's cwd."""
     name, label = "grok", "Grok Build"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         base = _base(env, "GROK_HOME", ".grok")
         if not base:
             return []
@@ -390,6 +393,11 @@ def _split_ref(path):
     return (db, rowid) if db else (None, None)
 
 
+def _openable(db, skip):
+    """Is `db` a database file to open: there, and not one the caller's `skip` leaves alone?"""
+    return bool(db) and os.path.isfile(db) and not (skip is not None and skip(db))
+
+
 def _ro(db):
     """A read-only connection; the path goes through a URI, so it is quoted (`#`, `?`, `%`,
     spaces, a Windows drive) rather than pasted in."""
@@ -408,9 +416,9 @@ class HermesSource(Source):
         base = _base(env, "HERMES_HOME", ".hermes")
         return os.path.join(base, "state.db") if base else None
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         db = self._db(env)
-        if not db or not os.path.isfile(db):
+        if not _openable(db, skip):
             return []
         try:
             con = _ro(db)
@@ -522,9 +530,9 @@ class OpenCodeSource(Source):
                     return table, row
         return None, None
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         db = self._db(env)
-        if not db or not os.path.isfile(db):
+        if not _openable(db, skip):
             return []
         seen, sizes = {}, {}
         try:
@@ -696,7 +704,7 @@ class AmpSource(Source):
     through `TOKENECONOMIZER_HOME`, else `~/.tokeneconomizer`."""
     name, label = "amp", "Amp"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         base = _base(env, "TOKENECONOMIZER_HOME", ".tokeneconomizer")
         if not base:
             return []
@@ -736,7 +744,7 @@ class AmpSource(Source):
 class DroidSource(Source):
     name, label = "droid", "Factory Droid"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         env = os.environ if env is None else env
         if not (env.get("FACTORY_HOME") or env.get("FACTORY_HOME_OVERRIDE")) and not _home(env):
             return []
@@ -787,9 +795,11 @@ class ZeroClawSource(Source):
                 pass
         return [db for db in map(_zeroclaw.zeroclaw_db, dirs) if db and os.path.isfile(db)]
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         out = []
         for db in self._dbs(env):
+            if not _openable(db, skip):
+                continue
             try:
                 con = _ro(db)
                 try:

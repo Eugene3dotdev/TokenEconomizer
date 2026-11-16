@@ -60,6 +60,13 @@ RESULT_CAP = 20000      # characters of a tool result the guard folds (errors li
 PROGRESS = "_progress"
 
 
+def _excluded_store(db):
+    """Is an agent's session database in an excluded directory (`privacy`)? Then it is not
+    opened, and the session is left as the copy, if any, stands."""
+    from . import privacy
+    return privacy.live(None, os.environ, db)
+
+
 class FoldLater(Exception):
     """A finished session's log cannot be had now but may be later: it stays unfolded."""
 
@@ -804,6 +811,8 @@ class Hermes(Host):
         path = transcript_path or os.path.join(state_root(), "hermes-sessions",
                                                f"{session_id}.json")
         db = os.path.join(session.get("hermes_home") or hermes_home(), "state.db")
+        if _excluded_store(db):
+            return transcript_path
         if trace.hermes_export(db, session_id, path) or os.path.exists(path):
             return path
         if time.time() - self.last_active(path, session) < self.FOLD_RETRY_S:
@@ -1363,6 +1372,8 @@ class ZeroClaw(Host):
                                                f"{session_id}.json")
         config_dir = session.get("zeroclaw_config_dir") or trace.zeroclaw_config_dir()
         db = os.path.join(config_dir, "data", "sessions", "acp-sessions.db") if config_dir else ""
+        if db and _excluded_store(db):
+            return transcript_path
         if (db and trace.zeroclaw_export(db, session_id, path)) or os.path.exists(path):
             return path
         if time.time() - self.last_active(path, session) < self.FOLD_RETRY_S:

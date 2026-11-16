@@ -385,7 +385,8 @@ def scan(ctx, heads, beat=None):
     for source in _enabled_sources(ctx):
         extra = ctx.config.history_dirs if source.name == "claude" else ()
         try:
-            logs = source.logs(ctx.env, extra)
+            # A database in an excluded directory is not even opened to list its rows.
+            logs = source.logs(ctx.env, extra, skip=heads.excluded.path)
         except Exception:
             _record_error(ctx.root)
             continue
