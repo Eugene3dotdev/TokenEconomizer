@@ -191,6 +191,26 @@ def test_on_windows_the_launcher_probes_and_skips_a_broken_alias_when_it_is_the_
     assert (tmp_path / "alias_called").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the Windows branch has its own probe")
+def test_the_launcher_skips_a_python3_that_does_not_run(tmp_path):
+    """A version manager's shim whose interpreter was removed is still found by `command -v`;
+    the launcher probes it, skips it, and takes the next python3 on PATH."""
+    shims = tmp_path / "shims"
+    pybin = tmp_path / "Python" / "bin"
+    for name in ("python3", "python"):
+        _script(shims / name, f': > "{tmp_path / "shim_called"}"\nexit 1')
+    _script(pybin / "python3", f'exec "{sys.executable}" "$@"')
+    work = tmp_path / "work"
+    work.mkdir()
+    code, out, _ = _run_hook(os.path.join(PLUGIN, "scripts", "te-hook"),
+                             {"hook_event_name": "SessionStart", "session_id": "s",
+                              "cwd": str(work), "source": "startup"},
+                             _hook_env(tmp_path, PATH=f"{shims}:{pybin}:{os.environ.get('PATH', '')}"))
+    assert code == 0 and json.loads(out) == {}
+    assert os.path.isdir(tmp_path / "home" / "repos")
+    assert (tmp_path / "shim_called").exists()
+
+
 def test_the_launcher_fails_open_without_python(tmp_path):
     code, out, _ = _run_hook(os.path.join(PLUGIN, "scripts", "te-hook"),
                              {"hook_event_name": "SessionStart"},

@@ -6,9 +6,9 @@ here and nowhere else:
   * `calls`    -- `load_trajectory`: any agent's log as ordered `(name, args, result, ok)` calls;
                   `call_cwds`, `tool_usage`, `strip_rtk_prefix`;
   * `catalog`  -- the tool list a session loaded, from whichever source the agent publishes;
-  * `antigravity`, `claude`, `codex`, `copilot`, `grok`, `hermes`, `opencode`, `pi` -- each agent's
-                  own session file: usage, metadata, prompt-turns, and the conversions that let
-                  the readers above handle it.
+  * `amp`, `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
+                  `opencode`, `pi`, `zeroclaw` -- each agent's own session file: usage, metadata,
+                  prompt-turns, and the conversions that let the readers above handle it.
 
 Stdlib only.
 """
@@ -27,9 +27,14 @@ from .codex import (codex_capability_trace, codex_exec_calls, codex_prompt_count
 from .copilot import (copilot_event_calls, copilot_mcp_servers, copilot_prompt_count,
                       copilot_session_meta, copilot_session_usage, copilot_turns,
                       mcp_server_of)
+from .amp import (amp_prompt_count, amp_result, amp_thread_head, amp_thread_to_claude,
+                  amp_thread_usage, amp_tool)
 from .antigravity import (antigravity_prompt_count, antigravity_read,
                           antigravity_session_to_claude, antigravity_session_usage)
 from .cursor import cursor_events_to_claude, cursor_prompt_count
+from .droid import (droid_history_logs, droid_log_head, droid_prompt_count,
+                    droid_session_to_claude, droid_session_usage, droid_sessions_dir,
+                    droid_tool)
 from .grok import (grok_json_reply, grok_prompt_count, grok_result, grok_session_to_claude,
                    grok_session_usage, grok_tool)
 from .hermes import (hermes_export, hermes_find_session, hermes_prompt_count, hermes_result,
@@ -39,6 +44,10 @@ from .opencode import (opencode_prompt_count, opencode_run_reply, opencode_sessi
                        opencode_session_to_claude, opencode_session_usage)
 from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_session_header,
                  pi_session_to_claude, pi_session_usage)
+from .sources import SOURCES, Source
+from .zeroclaw import (zeroclaw_config_dir, zeroclaw_export, zeroclaw_prompt_count,
+                       zeroclaw_result, zeroclaw_session_info, zeroclaw_session_to_claude,
+                       zeroclaw_session_usage, zeroclaw_tool)
 
 __all__ = [
     "RTK_PREFIX_RE", "call_cwds", "load_trajectory", "strip_rtk_prefix", "tool_usage",
@@ -53,9 +62,13 @@ __all__ = [
     "codex_session_meta", "codex_session_usage", "rollout_item_to_exec",
     "copilot_event_calls", "copilot_mcp_servers", "copilot_prompt_count", "copilot_session_meta",
     "copilot_session_usage", "copilot_turns", "mcp_server_of",
+    "amp_prompt_count", "amp_result", "amp_thread_head", "amp_thread_to_claude",
+    "amp_thread_usage", "amp_tool",
     "antigravity_prompt_count", "antigravity_read", "antigravity_session_to_claude",
     "antigravity_session_usage",
     "cursor_events_to_claude", "cursor_prompt_count",
+    "droid_history_logs", "droid_log_head", "droid_prompt_count", "droid_session_to_claude",
+    "droid_session_usage", "droid_sessions_dir", "droid_tool",
     "grok_json_reply", "grok_prompt_count", "grok_result", "grok_session_to_claude",
     "grok_session_usage", "grok_tool",
     "hermes_export", "hermes_find_session", "hermes_prompt_count", "hermes_result",
@@ -65,4 +78,8 @@ __all__ = [
     "opencode_session_to_claude", "opencode_session_usage",
     "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_session_header",
     "pi_session_to_claude", "pi_session_usage",
+    "SOURCES", "Source",
+    "zeroclaw_config_dir", "zeroclaw_export", "zeroclaw_prompt_count", "zeroclaw_result",
+    "zeroclaw_session_info", "zeroclaw_session_to_claude", "zeroclaw_session_usage",
+    "zeroclaw_tool",
 ]

@@ -7,10 +7,10 @@ so no extra API key is needed and the call is billed where the session is:
 
   * Claude Code: `claude -p --output-format json --tools "" --max-turns 1`, with none of the
     person's MCP servers (`--strict-mcp-config` and an empty `--mcp-config`, where the CLI has
-    them), on `paid_model` (default `haiku`). This is a deliberate departure from the
-    experiments, which ran every optimizer call on the agent's own model so overhead could not
-    look cheaper than the arm it was charged to; in a user's session the cheapest capable model
-    is the right default, and the ledger records the real cost either way.
+    them), on `paid_model` (default `CLAUDE_DEFAULT_MODEL`, `opus`). The owner's model policy
+    forbids Haiku and names Opus for the plugin's own calls (the loop guard's judge and the
+    micro-skills proposer), pinned explicitly rather than left to the session's model; the
+    ledger records the real cost either way.
   * Codex: `codex exec --json --disable hooks --ephemeral -s read-only`. Each such call carries
     Codex's full base prompt (~25k tokens, mostly cached) on the user's plan quota, one reason
     micro-skills (whose proposer calls it) defaults off and the loop guard's judge is woken
@@ -40,10 +40,23 @@ so no extra API key is needed and the call is billed where the session is:
   * Antigravity: none. `agy` has no option that runs a turn without tools, and a side call's
     prompt holds text a repository controls, so its micro-skills keep to the LLM-free facts and
     its loop guard never asks a judge (`NO_SIDE_CALLS`).
+  * Factory Droid: none, for the same reason. `droid exec` refuses an empty tool list
+    (`--only-tools ""`: "Expected at least one tool ID", 1.12.1), and its default read-only
+    autonomy still offers Read, Grep, LS, FetchUrl and WebSearch. `--only-tools TodoWrite`
+    leaves only its planning tool (`--list-tools`, no model call), a possible route once a run
+    on a model the person chooses has shown its reply and usage (`NO_SIDE_CALLS`).
+  * Amp: none, for the same reason. `amp -x` runs a full agent turn with the shell, file and web
+    tools, and neither a flag nor `amp.tools.disable` in a `--settings-file` turns them off
+    (0.0.1794283240: `amp tools list` is unchanged under it). The plugin API's `amp.ai` calls
+    are billed to the thread and answer only yes/no or a choice, not the text a proposer writes.
   * Hermes: `hermes chat -Q --oneshot --source tool --ignore-rules --max-turns 1 -t bot_room` on
     the person's default model. Never `hermes -z`, which auto-approves dangerous commands: a side
     call's prompt holds text a repository controls, and this form offers it no tool. See
     `hermes_call` for why `TE_SIDECALL` is not how it avoids the plugin's hooks.
+  * ZeroClaw: none. `zeroclaw agent -m` runs one prompt only as a configured agent, with the
+    tools that agent's risk profile allows; 0.9.0 has no option that leaves them out, and a
+    profile without tools would mean writing the person's ZeroClaw config. So, as on Antigravity,
+    micro-skills keep to the LLM-free facts and the loop guard never asks a judge.
 
 Every side call but Hermes's runs with `TE_SIDECALL=1`, which the plugin's hook entry point treats as "do
 nothing": without it the nested agent would run this plugin's hooks and recurse. A call that
@@ -276,12 +289,17 @@ def claude_json(stdout):
     return data if isinstance(data, dict) else {}
 
 
-def claude_call(prompt, model="haiku", cli=None, timeout=TIMEOUT_S):
+# The Claude model the plugin's own calls use when `paid_model` is empty. Never Haiku: the
+# owner's model policy forbids it, and names Opus for the judge and the proposer.
+CLAUDE_DEFAULT_MODEL = "opus"
+
+
+def claude_call(prompt, model=CLAUDE_DEFAULT_MODEL, cli=None, timeout=TIMEOUT_S):
     cli = cli or claude_cli()
     with tempfile.TemporaryDirectory(prefix="te-side-", ignore_cleanup_errors=True) as cwd:
         # `--mcp-config` takes several values, so an option follows it, never a bare argument.
         cmd = ([cli, "-p", "--output-format", "json", "--max-turns", "1", "--tools", ""]
-               + claude_no_mcp(cli, cwd) + ["--model", model or "haiku"] + claude_flags(cli))
+               + claude_no_mcp(cli, cwd) + ["--model", model or CLAUDE_DEFAULT_MODEL] + claude_flags(cli))
         out = subprocess.run(cmd, input=prompt, capture_output=True,
                              encoding="utf-8", errors="replace", timeout=timeout, env=_env(),
                              cwd=cwd)
@@ -678,8 +696,9 @@ COPILOT_TOOLS = ("bash", "read_bash", "write_bash", "stop_bash", "list_bash", "v
                  "list_agents", "read_agent", "write_agent", "fetch_copilot_cli_documentation")
 
 
-# The cheapest capable model by BYOK provider type, in the ids that provider expects.
-BYOK_DEFAULT_MODEL = {"anthropic": "claude-haiku-4-5"}
+# The default model by BYOK provider type, in the ids that provider expects (Opus, as
+# `CLAUDE_DEFAULT_MODEL`; never Haiku).
+BYOK_DEFAULT_MODEL = {"anthropic": "claude-opus-5-5"}
 
 
 def copilot_model(paid_model="", env=None):
@@ -695,7 +714,7 @@ def copilot_model(paid_model="", env=None):
             return v
     base = env.get("COPILOT_PROVIDER_BASE_URL") or ""
     if "openrouter.ai" in base:            # OpenRouter's own ids, on either wire
-        return "anthropic/claude-haiku-4.5"
+        return "anthropic/claude-opus-5.5"
     if base:
         return BYOK_DEFAULT_MODEL.get((env.get("COPILOT_PROVIDER_TYPE") or "openai").lower(), "")
     return ""
@@ -740,11 +759,13 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 
 
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
-NO_SIDE_CALLS = frozenset({"antigravity"})
+# ZeroClaw 0.9.0: `zeroclaw agent -m` runs one prompt, but as a configured agent (`--agent` is
+# required) with the tools its risk profile allows, and has no flag that turns them off.
+NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid", "zeroclaw"})
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "opencode": "opencode run", "cursor": "cursor-agent -p",
-          "hermes": "hermes chat"}
+          "hermes": "hermes chat", "droid": "droid exec"}
 
 
 def call_name(host_name):
@@ -783,4 +804,4 @@ def _host_call(host_name, config):
         return lambda prompt, _m="agent": codex_call(prompt, model=model)
     if host_name == "copilot":
         return lambda prompt, _m="agent": copilot_call(prompt, model=model)
-    return lambda prompt, _m="agent": claude_call(prompt, model=model or "haiku")
+    return lambda prompt, _m="agent": claude_call(prompt, model=model or CLAUDE_DEFAULT_MODEL)

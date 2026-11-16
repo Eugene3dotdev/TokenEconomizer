@@ -69,8 +69,8 @@ mechanisms:
   itself.
 
 TokenEconomizer is a plugin for **Claude Code**, **Codex**, the **GitHub Copilot CLI** and **Pi**,
-with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent** and
-the **Antigravity CLI**. Each italic
+with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent**,
+the **Antigravity CLI**, **Factory Droid** and **ZeroClaw**. Each italic
 letter above is a setting, shown with its default ([Settings](#settings)), and each mechanism can be turned on or
 off. The plugin announces each action in one line, and if any part of it fails, your session
 carries on as if it were not installed. Its model calls (the fact proposer, and the judge with the
@@ -213,6 +213,17 @@ and tool pruning is not available. macOS and Linux only:
 on Windows `agy` runs hook commands through `cmd /c`, and this plugin's launcher is a POSIX shell
 script. See [its limits](plugin/README.md#antigravity-cli).
 
+**Factory Droid** (experimental; micro-skills and the loop guard, with no model calls)
+
+```sh
+droid plugin marketplace add /path/to/TokenEconomizer
+droid plugin install tokeneconomizer@TokenEconomizer --scope user
+```
+
+The marketplace is named after the clone's directory (`droid plugin marketplace list`). Start
+`droid` in a repository, then check with `~/.tokeneconomizer/bin/te --host droid status`. Droid
+runs the Claude Code hook file and warns that it has no `PostToolUseFailure` event. See
+[its limits](plugin/README.md#factory-droid).
 **opencode** (experimental)
 
 ```sh
@@ -239,10 +250,36 @@ hermes gateway restart
 Link it rather than running `hermes plugins install`, which leaves the launchers behind when given
 this directory and refuses the whole repository at its security scan. Send a prompt, then check in the repository with `~/.tokeneconomizer/bin/te --host hermes status`.
 
+**ZeroClaw** (experimental; micro-skills' LLM-free facts only, through its ACP server)
+
+```sh
+git clone https://github.com/microsoft/TokenEconomizer.git
+# in your ACP client, in place of `zeroclaw acp`:
+python3 "$PWD/TokenEconomizer/plugin/zeroclaw/te_zeroclaw_acp.py" acp
+```
+
+ZeroClaw has no plugin or hook surface that sees a session, so the plugin is a relay in front of
+`zeroclaw acp`, with the same arguments. Run a session, then check in the repository with
+`~/.tokeneconomizer/bin/te --host zeroclaw status`. The plugin makes no model call through
+ZeroClaw, so the paid proposer and the loop guard are off, and tool pruning is not available. See
+[its limits](plugin/README.md#zeroclaw).
+
 If the install worked, the status command prints a short status block. `refresh-catalog`
 records every tool a session loads (without a model call), so that tool pruning can consider all
 of them. Keep the marketplace path absolute, as above: the Copilot CLI reads a relative path such
 as `./TokenEconomizer` as the name of a GitHub repository.
+
+The plugin starts learning from the sessions your agents have already run. The first session
+start in a repository reads that repository's earlier sessions from every agent's logs on the
+machine, in the background, and says so at the next start. To read every repository at once,
+run this once after installing (it needs no agent running and makes no model call):
+
+```sh
+~/.tokeneconomizer/bin/te history import --all
+```
+
+`--dry-run` says what it would read. `te config set history_import=off --global` turns the
+reading of history off (see [Settings](#settings)).
 
 To update:
 
@@ -251,6 +288,8 @@ To update:
 | Claude Code, Copilot CLI, opencode | `git pull` in the clone |
 | Hermes Agent | `git pull` in the clone, then `hermes gateway restart` |
 | Antigravity CLI | build the bundle again and `agy plugin install` it |
+| Factory Droid | `git pull` in the clone, whose package the plugin runs; Droid's copy of the hook file changes only with `droid plugin update` (not yet checked) |
+| ZeroClaw | `git pull` in the clone |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
 
@@ -270,6 +309,8 @@ uninstalling, using Copilot with your own model key, and troubleshooting.
 | opencode (experimental) | 1.19.5 and 2.2.0 | not tested |
 | Hermes Agent (experimental) | 0.22.5 | not tested |
 | Antigravity CLI (experimental) | agy 1.5.1, macOS and Linux | not tested |
+| Factory Droid (experimental) | 1.12.1, Linux, without a model call | not tested |
+| ZeroClaw (experimental) | 0.9.0, ACP server, Linux | not tested |
 
 The commands above were tested on the oldest and newest version in each range; newer versions
 have not been tested yet.
@@ -292,12 +333,20 @@ have not been tested yet.
 - **Antigravity CLI** support is experimental: it was written against agy 1.5.1's hook contract
   and transcript format, which are not a public interface, and only micro-skills' LLM-free facts
   are supported: the plugin makes no model call through `agy`. See [its limits](plugin/README.md#antigravity-cli).
+- **ZeroClaw** support is experimental: it was tested on 0.9.0 only, on Linux, through its ACP
+  server with a scripted local model. Only micro-skills' LLM-free facts are supported, delivered in
+  front of a prompt; the plugin makes no model call through ZeroClaw. See
+  [its limits](plugin/README.md#zeroclaw).
 - **Hermes Agent** support is experimental: it was tested on 0.22.5 only, with a scripted local
   model and one free real model, on the classic CLI and one-shot runs only. Micro-skills and a
   redirect reaching a real model are verified there; the still-stuck notice reaching a person is
   not. Its other surfaces (the Ink TUI, the Desktop app, messaging platforms, cron) and
   subagents are ignored, and tool pruning is not available. See
   [its limits](plugin/README.md#hermes-agent).
+- **Factory Droid** support is experimental: on 1.12.1 the plugin's install, its hooks running,
+  the session-start reply and the fold at session end were checked in a disposable profile with no
+  model call; that the facts reach Droid's model, and the loop guard in a live turn, were not.
+  The plugin makes no model call through `droid`. See [its limits](plugin/README.md#factory-droid).
 
 ### Everyday commands
 
@@ -314,13 +363,15 @@ commands. They have the same names on every agent; only the way you type them di
 | Grok Build | from a terminal: `~/.tokeneconomizer/bin/te --host grok <command>` |
 | Hermes Agent | from a terminal: `~/.tokeneconomizer/bin/te --host hermes <command>` |
 | Antigravity CLI | from a terminal: `~/.tokeneconomizer/bin/te --host antigravity <command>` |
+| Factory Droid | from a terminal or Droid's shell: `~/.tokeneconomizer/bin/te --host droid <command>` |
+| ZeroClaw | from a terminal: `~/.tokeneconomizer/bin/te --host zeroclaw <command>` |
 | a terminal, in the repository | `~/.tokeneconomizer/bin/te <command>` |
 
 | Command | What it does |
 |---|---|
 | `status` | what it learned and did here, and what your sessions cost |
 | `microskills` | the facts it injects, and those still forming |
-| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent or the Antigravity CLI) |
+| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent, the Antigravity CLI, Factory Droid or ZeroClaw) |
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |
@@ -368,13 +419,17 @@ repository have been idle for *q* minutes (or, at the latest, a day after the li
 conversation resumed after its tools change must write its whole history to the prompt cache again
 instead of reading it, and after an idle hour that cache has expired anyway.
 
-On Claude Code, the plugin can also learn from a repository's earlier sessions, read from Claude
-Code's own logs oldest first and without any model call. This is off by default, and a
-repository's history is read only before the plugin has learned from any session there, so turn
-it on right after installing: with `config set history_import=on --global`, the first session in
-each repository reads that repository's earlier sessions in the background (see [Earlier
-sessions](plugin/README.md#earlier-sessions)). A deny list that rests on those earlier sessions
-waits for `toolprune apply`, even under `auto`.
+The plugin also learns from the sessions the agents' own logs already hold, oldest first and
+without any model call: this agent's sessions from before the plugin was installed, and every
+other agent's sessions in the same repository, before and after. Claude Code, Codex, the Copilot
+CLI, Pi, Grok Build, Hermes, opencode and Factory Droid are read. A fact about the repository
+is true whichever agent found it, so micro-skills cross between agents; tool pruning counts only
+this agent's own sessions, since tool names differ per agent, and the loop guard's envelope is
+seeded from this agent's own history only. This is on by default: the first session start in a
+repository reads its history in the background, later starts catch up on the other agents'
+sessions since, and `te history import --all` reads every repository the logs name at once (see
+[Earlier sessions](plugin/README.md#earlier-sessions)). A deny list that rests on those earlier
+sessions waits for `toolprune apply`, even under `auto`.
 
 Besides `on` and `off`, two modes are useful: `toolprune=propose` only proposes the deny list, and
 nothing changes until you run `toolprune apply`; `microskills=envfacts` learns facts only from
@@ -404,6 +459,8 @@ what it can leave out differs:
 | opencode | nothing yet | — |
 | Hermes Agent | nothing yet | — |
 | Antigravity CLI | nothing yet | — |
+| Factory Droid | nothing yet | — |
+| ZeroClaw | nothing yet | — |
 
 Tool pruning adds only its own entries and never touches deny rules you wrote; a settings file it
 creates is kept out of git (`.git/info/exclude`). On Claude Code, the session-start line that says

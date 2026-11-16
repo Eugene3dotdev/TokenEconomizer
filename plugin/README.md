@@ -1,14 +1,15 @@
 # TokenEconomizer plugin
 
 How to install and use TokenEconomizer in Claude Code, Codex, the GitHub Copilot CLI, Pi, Cursor
-(experimental), Grok Build (experimental), opencode (experimental), Hermes Agent (experimental)
-and the Antigravity CLI (experimental). What the plugin does and why is in the [main README](../README.md); its
+(experimental), Grok Build (experimental), opencode (experimental), Hermes Agent (experimental),
+the Antigravity CLI (experimental), Factory Droid (experimental), Amp (experimental) and ZeroClaw (experimental). What the plugin does and why is in the [main README](../README.md); its
 design and the verified behaviour of each agent are in [`docs/PLUGIN.md`](../docs/PLUGIN.md).
 
 - [Before you start](#before-you-start)
 - Install and use it on [Claude Code](#claude-code) · [Codex](#codex) ·
   [Copilot CLI](#copilot-cli) · [Pi](#pi) · [Cursor](#cursor) · [Grok Build](#grok-build) · [opencode](#opencode) ·
-  [Hermes Agent](#hermes-agent) · [Antigravity CLI](#antigravity-cli)
+  [Hermes Agent](#hermes-agent) · [Antigravity CLI](#antigravity-cli) · [Factory Droid](#factory-droid) ·
+  [Amp](#amp) · [ZeroClaw](#zeroclaw)
 - [What to expect](#what-to-expect) · [Commands](#commands) · [Settings](#settings)
 - [Repository map](#repository-map) · [Using with rtk](#using-with-rtk) ·
   [Model calls and API keys](#model-calls-and-api-keys) · [Troubleshooting](#troubleshooting)
@@ -584,6 +585,131 @@ is off by default: `te --host antigravity config set microskills=envfacts`.
   proposer never runs, and the loop guard, which needs a judge's verdict to act, never redirects
   a turn.
 
+## Factory Droid
+
+Experimental: **micro-skills and the loop guard**, checked on Droid 1.12.1 without a model call.
+
+**1. Install.** Add this checkout as a Droid marketplace and install the plugin from it:
+
+```bash
+droid plugin marketplace add /path/to/TokenEconomizer
+droid plugin install tokeneconomizer@TokenEconomizer --scope user
+```
+
+The marketplace takes the checkout's directory name (`droid plugin marketplace list` shows it).
+Droid's copy of the plugin leaves out the `lib` link, so the plugin finds the package in the
+checkout the marketplace was added from; keep that checkout in place.
+
+**2. Check it.** Run a session, then `~/.tokeneconomizer/bin/te --host droid status` in the
+repository; inside a Droid session's shell, `te` knows it is Droid without `--host`.
+
+**How it works, and what it does not do.**
+
+- Droid runs the plugin's Claude Code hook file. It warns once per run that `PostToolUseFailure`
+  is not a Droid event, and runs the rest.
+- Droid has no `PostToolUseFailure`, and sends no `PostToolUse` for a shell command that failed,
+  so the loop guard sees only the calls that succeeded until the session is folded.
+- The plugin makes no model call through `droid`: `droid exec` cannot run a prompt with every tool
+  off, and such a call's prompt holds text a repository controls. So micro-skills' paid proposer
+  never runs, and the loop guard, which needs a judge's verdict to act, redirects a turn only at
+  its backstop.
+- Droid's session logs record no token usage, so its sessions are unpriced. Tool pruning is not
+  available.
+
+## Amp
+
+Experimental: **micro-skills and the loop guard**, written against Amp `0.0.1794283240` (the
+ampcode CLI) on Linux. One plugin file, `amp/tokeneconomizer.ts`, which Amp runs under its own Bun.
+
+**1. Install.** Link the plugin where Amp looks for system plugins, keeping it next to `scripts/`
+and `lib/` (the link is followed back to them):
+
+```bash
+mkdir -p ~/.config/amp/plugins
+ln -s /path/to/TokenEconomizer/plugin/amp/tokeneconomizer.ts ~/.config/amp/plugins/tokeneconomizer.ts
+```
+
+(Per repository: `.amp/plugins/`. Where `~/.config/amp` is managed, by chezmoi or otherwise, add
+the link in its source instead.) Python 3.10+ must be on `PATH`, or named by `TE_PYTHON`.
+
+**2. Check it.** `amp plugins list` should show `tokeneconomizer.ts active` with the events
+`session.start, agent.start, tool.result, agent.end` and three commands. In the TUI the command
+palette has `TokenEconomizer: status`, `micro-skills` and `history`; from a terminal it is
+`~/.tokeneconomizer/bin/te --host amp <command>`. Micro-skills is off by default: `te --host amp
+config set microskills=envfacts`.
+
+**How it works, and what it does not do.**
+
+- Amp keeps no thread on this machine; threads live on Amp's server. So the plugin writes its own
+  copy of each thread as turns end, `~/.tokeneconomizer/amp-threads/<thread id>.jsonl`, private to
+  you, and that is what the fold and the history import read. Where a copy holds no prompt (the
+  plugin was added in the middle of a thread), the fold runs `amp threads export <thread id>`,
+  which downloads the thread as you are signed in, and saves it beside the copy. An older thread
+  can be imported the same way by hand: `amp threads export T-... >
+  ~/.tokeneconomizer/amp-threads/T-....json`.
+- Context reaches the model only as text appended to your message (`agent.start`), not as a
+  system prompt. The learned facts are appended to a thread's first prompt, inside
+  `<tokeneconomizer>` tags and hidden in the UI; the thread keeps that message, so a resumed
+  thread is not given them again. A loop guard redirect is appended to the tool result the model
+  reads next.
+- Amp has no session end. A thread is handed over when Amp disposes of the plugin (it allows
+  about 3 seconds), after the one turn of `amp -x`, or by the next session start in that
+  repository once its copy has been quiet for 10 minutes.
+- The plugin never subscribes to `tool.call`, so it never blocks a call. Tool pruning is not
+  available.
+- The plugin makes no model call through Amp: `amp -x` runs a full agent with the shell, file and
+  web tools, and there is no option that turns every tool off. So micro-skills' paid proposer
+  never runs, and the loop guard has no judge to ask.
+
+**Uninstall.** `rm ~/.config/amp/plugins/tokeneconomizer.ts`. Optional: `rm -rf
+~/.tokeneconomizer/amp-threads`.
+
+## ZeroClaw
+
+Experimental: **micro-skills' LLM-free facts**, on ZeroClaw 0.9.0's ACP server (`zeroclaw acp`),
+Linux and macOS. ZeroClaw has no hook or plugin surface that sees a session: its WASM plugins are
+tools, channels and memory backends, its hooks are two built-in loggers, and the files it adds to
+a system prompt come from the agent's own workspace, not the repository. So the plugin is a relay
+on the ACP pipe, in front of `zeroclaw acp`.
+
+**1. Install.** In your ACP client (an editor or harness that runs ZeroClaw over ACP), replace the
+`zeroclaw acp` command with the relay, keeping the arguments:
+
+```sh
+python3 /path/to/TokenEconomizer/plugin/zeroclaw/te_zeroclaw_acp.py acp [--config-dir DIR]
+```
+
+It starts `zeroclaw` (the one on `PATH`, else `~/.local/bin/zeroclaw`; `TE_ZEROCLAW_BIN` names
+another) with the same arguments and passes every line through unchanged, except a prompt that
+the plugin has context for.
+
+**2. Check it.** Run a session in a repository, then `~/.tokeneconomizer/bin/te --host zeroclaw
+status` there. Every command runs from a terminal. Micro-skills is off by default:
+`te --host zeroclaw config set microskills=envfacts`.
+
+**How it works, and what it does not do.**
+
+- The relay turns the ACP session into the plugin's events: `session/new` (or `session/load`) is
+  the session's start, `session/prompt` a prompt, each finished `tool_call` a tool result, the
+  prompt's answer the turn's end, and `session/close`, `session/stop` or the pipe closing its end.
+- Context (the learned facts, and the repository map) goes in front of the next prompt, as an
+  extra text part. ZeroClaw keeps it in the session's transcript.
+- The session is folded from ZeroClaw's own store (`<config dir>/data/sessions/acp-sessions.db`)
+  when it ends. A copy without the conversation's words is kept in
+  `~/.tokeneconomizer/zeroclaw-sessions/`, private to you.
+- ZeroClaw records no exit code: a call counts as failed when its result starts with one of
+  ZeroClaw's error prefixes (`Error: `, `Error executing `, ...).
+- The store records no token counts, so session cost is not priced.
+- ACP gives a client no way into a running turn, so a loop guard redirect cannot be delivered.
+  Notices go to the relay's stderr, which the client logs.
+- The plugin makes no model call through ZeroClaw: `zeroclaw agent -m` runs a full agent turn with
+  its tools, and turning them off would mean writing your ZeroClaw config. So the paid proposer
+  never runs, and the loop guard, which needs a judge's verdict to act, never redirects a turn.
+- Tool pruning is not available. Only ZeroClaw's ACP store is read: an ACP session run without the
+  relay is read later as an earlier session, and conversations held by ZeroClaw's channels or
+  gateway are not read at all.
+
+**Uninstall.** Point your ACP client back at `zeroclaw acp`. Optional: `rm -rf ~/.tokeneconomizer`.
 ## What to expect
 
 The plugin works session by session: what it learns from a repository's earlier sessions is
@@ -651,7 +777,7 @@ repository is not used by Codex there), while settings are shared by every agent
 | `config set KEY=VALUE … [--global]` | change settings for this repository (or every one); see [Settings](#settings) |
 | `config unset KEY … [--global]` | remove the setting at this level, so the global value (or the default) applies |
 | `repomap` / `repomap refresh` | the cached repository map / make it now (see [Repository map](#repository-map)) |
-| `history` / `history import [--dry-run]` | Claude Code: what the import of this repository's earlier sessions did / run it now, or say what it would read (see [Earlier sessions](#earlier-sessions)) |
+| `history` / `history import [--dry-run] [--all]` | what the import of this repository's earlier sessions, from every agent's logs, did / run it now, or say what it would read; `--all` for every repository the logs name (see [Earlier sessions](#earlier-sessions)) |
 | `repos` | every repository it keeps state for: how it was identified, its sessions per agent, the checkouts seen |
 | `repos migrate` | file state an earlier version recorded under the repository it belongs to (runs by itself, once, after an upgrade) |
 | `repos merge KEY [INTO]` | merge one repository's state into another's (default: this one), for state whose checkouts are gone |
@@ -669,6 +795,9 @@ How to run them:
 | Grok Build | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host grok <command>` |
 | Hermes Agent | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host hermes <command>` |
 | Antigravity CLI | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host antigravity <command>` |
+| Factory Droid | none (run from a terminal or its shell) | `~/.tokeneconomizer/bin/te --host droid <command>` |
+| Amp | command palette: `TokenEconomizer: status`, `micro-skills`, `history` | `~/.tokeneconomizer/bin/te --host amp <command>` |
+| ZeroClaw | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host zeroclaw <command>` |
 
 `doctor`, `history` and `repomap` run from a terminal (or as `/te …` on Pi); there is no slash command or
 Codex skill for them.
@@ -765,27 +894,36 @@ of the preset. A value you set with `loopguard.<name>` wins over both. Defaults 
 | `repomap_python` | auto | the Python that has aider installed |
 | `repomap_timeout` | `8` | seconds the first prompt may wait for a ranked map before the cached one is used |
 
-<a id="earlier-sessions"></a>**Earlier sessions** (Claude Code). Claude Code keeps every
-session's log (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`). With `history_import` on
-(it is off by default), the first session start in a repository where nothing has been folded
-yet reads that repository's earlier sessions from there, in a background `te history import`,
-oldest first and each once, without any model call; `history import` does the same by hand. A log
-belongs to the repository its recorded directory is in; when that directory no longer exists,
-to the repository whose root Claude Code would file under the same folder name (an exact match).
+<a id="earlier-sessions"></a>**Earlier sessions.** Every agent the plugin reads keeps its
+sessions' logs: Claude Code (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`), Codex
+(`~/.codex/sessions/`, and an OpenClaw agent's embedded Codex home), the Copilot CLI
+(`~/.copilot/session-state/`), Pi (`~/.pi/agent/sessions/`), Grok Build (`~/.grok/sessions/`),
+Hermes (`~/.hermes/state.db`), opencode (`~/.local/share/opencode/opencode.db`), Amp (the
+plugin's own copies in `~/.tokeneconomizer/amp-threads/`, since Amp keeps none), ZeroClaw
+(`~/.zeroclaw/data/sessions/acp-sessions.db`, or under `ZEROCLAW_CONFIG_DIR`, and every
+`~/.zeroclaw-*` install beside it) and Factory Droid (`~/.factory/sessions/`). With
+`history_import` on (the default), the first session start in a repository reads that
+repository's sessions from all of them, in a background `te history import`, oldest first and
+each once, without any model call; later session starts catch up on the other agents' sessions
+since, and a session's own fold first folds the other agents' sessions that ended before it.
+`history import` does the same by hand, and `history import --all` reads every repository the
+logs name, into the store of each agent that ran there. A log belongs to the repository its
+recorded directory is in; when that directory no longer exists, Claude Code's and Droid's logs
+belong to the repository whose root they would file under the same folder name (an exact match).
 Left out: a log written in the last ten minutes, one the plugin already saw, one with no prompt,
-one over 256 MB, one older than `history_days`, and a one-prompt `claude -p` or SDK run. A
-repository that already has folded sessions is not imported into (`history import` says why), so
-that earlier sessions are never learned after later ones; a session that ends during the import is
-folded after it. A deny list that rests on those earlier sessions is only proposed, even with
-`toolprune=auto`: the next session start says so, and nothing changes until you run `toolprune
-apply`. `status` counts the earlier sessions on their own. Since a repository's history is read
-only before its first session is folded, turn the import on right after installing
-(`config set history_import=on --global`), or run `history import` in a repository before its
-first session there ends.
+one over 256 MB, one older than `history_days`, a one-prompt `claude -p`, `codex exec` or
+`hermes -z` run, and one that ended before the newest session this store has already folded
+(`behind`), so that earlier sessions are never learned after later ones; a session that ends
+during the import is folded after it. Another agent's session teaches micro-skills only: tool
+pruning never counts it (tool names differ per agent), and the loop guard's envelope is seeded
+from this agent's own history only. A deny list that rests on those earlier sessions is only
+proposed, even with `toolprune=auto`: the next session start says so, and nothing changes until
+you run `toolprune apply`. `status` counts the earlier sessions on their own, by agent.
 
 | Key | Default | What it sets |
 |---|---|---|
-| `history_import` | `false` | `true`: a repository's first session start reads its earlier sessions |
+| `history_import` | `true` | `false`: learn only from sessions the plugin sees end |
+| `history_sources` | `all` | which agents' logs are read: `all`, `self` (this agent's own only), or names separated by commas (`claude`, `codex`, `copilot`, `pi`, `grok`, `hermes`, `opencode`, `amp`, `zeroclaw`, `droid`) |
 | `history_max_sessions` | `200` | the most recent earlier sessions read |
 | `history_days` | `365` | how far back, in days |
 | `history_dirs` | none | further Claude Code `projects` folders to read, separated by commas |
@@ -795,7 +933,7 @@ first session there ends.
 | Key | Default | Values |
 |---|---|---|
 | `enabled` | `true` | `false`: the whole plugin is off; its hooks return at once and record nothing |
-| `paid_model` | `""` | model for the plugin's own calls; empty: `haiku` on Claude Code, the agent's own default model on Codex and Pi, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Haiku, else Copilot's own default |
+| `paid_model` | `""` | model for the plugin's own calls; empty: `opus` on Claude Code, the agent's own default model on Codex and Pi, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Opus, else Copilot's own default. Never Haiku |
 | `pi_extensions` | `""` | Pi only: extension files (comma-separated paths) the plugin's own calls load, for a model whose provider an extension registers |
 | `pi_cli` | `""` | Pi only: the `pi` the plugin's own calls run; empty: the first on PATH |
 | `shadow` | `false` | decide and log everything, act on nothing |
@@ -884,7 +1022,7 @@ a token). No call is sent file contents or your prompts:
 
 Each call is one request through the agent's CLI, which adds its own fixed instructions to the
 prompt; the plugin cannot leave those out, and the cost it records is the whole request's. The
-calls use the model `paid_model` names; when it is empty, `haiku` on Claude Code, and on the other
+calls use the model `paid_model` names; when it is empty, `opus` on Claude Code, and on the other
 agents the default listed under [Settings](#settings). `status` prints the repository's total as
 `plugin overhead`, with its share of all tokens. Per session, the repository's `ledger.jsonl`
 (under `~/.tokeneconomizer/repos/`) has the proposer's tokens in the session's record, under

@@ -1,7 +1,8 @@
 """The entry point every plugin hook executes: hook JSON on stdin, hook JSON on stdout.
 
-    python -m tokeneconomizer.plugin.hook [--host antigravity|claude|codex|copilot|cursor|grok|hermes|
-                                                  opencode|pi] [--event NAME]
+    python -m tokeneconomizer.plugin.hook [--host amp|antigravity|claude|codex|copilot|cursor|
+                                                  droid|grok|hermes|opencode|pi|zeroclaw]
+                                                  [--event NAME]
 
 It never fails the agent. Whatever goes wrong -- unreadable input, a full disk, a bug -- the hook
 prints `{}` (which changes nothing) and records the traceback in `<state root>/errors.log`. It
@@ -25,13 +26,17 @@ def _truthy(v):
 
 def run(payload, env, host_hint=None):
     """Handle one hook payload; returns the output dict (no I/O, so tests call it directly)."""
-    from . import hosts
+    from . import hosts, privacy
     from .context import LiveContext
     from .controller import LiveController
     host = hosts.detect(payload, env, hint=host_hint)
     if hasattr(host, "prepare"):
         payload = host.prepare(payload, env)
-    ctx = LiveContext.build(host, host.cwd(payload, env), env,
+    cwd = host.cwd(payload, env)
+    if privacy.live(cwd, env, payload.get("transcript_path"), payload.get("agent_transcript")):
+        # Before anything is built or recorded: a session there leaves no trace in the state.
+        return {privacy.EXCLUDED_KEY: True} if getattr(host, "keeps_copy", False) else {}
+    ctx = LiveContext.build(host, cwd, env,
                             session_id=host.session_id(payload) or None, settle=False)
     if not ctx.config.enabled:
         return {}

@@ -1,7 +1,7 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent and Antigravity CLI sessions, through the hooks (on Pi, the extension events) each agent
+opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid, Amp and ZeroClaw sessions, through the hooks (on Pi, the extension events; on ZeroClaw, a relay on its ACP pipe) each agent
 exposes: what it does at each hook, what differs from the experiments and why, the agent
 behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
 the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
@@ -13,7 +13,7 @@ the hooks run) and `plugin/` (the packaging for each agent). To install and use 
 
 | Hook | What the plugin does | Mechanism it drives |
 |---|---|---|
-| `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen; on Claude Code with `history_import` on, the first time in a repository with nothing folded, starts a detached `te history import` of its sessions from before the plugin, and says once when that is done | microskills |
+| `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen; with `history_import` on (the default), starts a detached `te history import` the first time in a repository, and again, at most every ten minutes, to catch up on the other agents' sessions since, and says once what it read | microskills |
 | `UserPromptSubmit` | Opens a prompt-turn for the loop guard | loopguard |
 | `PostToolUse` | Folds the call into the turn's guard; delivers a redirect as `additionalContext`, then, if the turn is still stuck, a one-line notice to the person (on Claude Code, also as context asking the model to repeat it); never stops the turn | loopguard |
 | `PostToolUseFailure` | The same, for a call that failed (Claude Code and Copilot report a failed call only here); the answer names this event, as Claude Code requires | loopguard |
@@ -44,25 +44,41 @@ re-tuned. Three things it adds:
   the hook. The hook starts the job and returns; a later PostToolUse picks up the verdict, with
   the redirect already written. Each job's spend is charged to the ledger when it is spent.
 
-**Earlier sessions** (`plugin/history.py`). Claude Code keeps every session's log, so the
-sessions a repository ran before the plugin was installed can be folded too: `te history
-import`, which the first session start in a repository runs by itself when `history_import` is
-on (it is off by default). Which
-logs are the repository's is decided as for a live session, by `repo_identity` of the directory
-each log records; where that directory is gone, by an exact match of the log's folder with the
-one Claude Code derives from the repository's root. A log written in the last ten minutes, one
-already folded or recorded by the plugin's hooks, one with no prompt, one over 256 MB, one older
-than `history_days`, and a one-prompt SDK run (`claude -p`) are left out, and the newest
+**Earlier sessions** (`plugin/history.py`, `trace/sources.py`). Every agent the package reads
+keeps its sessions' logs (`trace.sources.SOURCES`: Claude Code, Codex, the Copilot CLI, Pi, Grok
+Build, Hermes, opencode, ZeroClaw, Factory Droid), so three more kinds of session can be folded: this
+agent's sessions from before the plugin was installed, the other agents' sessions in the same
+repository (before and after install), and every repository the logs name (`te history import
+--all`). The first session start in a repository runs `te history import` by itself when
+`history_import` is on (the default), and later starts run it again, `CATCHUP_EVERY_S` apart at
+most, for the other agents' sessions since. Which logs are the repository's is decided as for a
+live session, by `repo_identity` of the directory each log records; where that directory is
+gone, by an exact match of the log's folder with the one Claude Code (or Droid) derives from the
+repository's root. A log written in the last ten minutes, one already folded or recorded by the
+plugin's hooks, one with no prompt, one over 256 MB, one older than `history_days`, and a
+one-prompt scripted run (`claude -p`, `codex exec`, `hermes -z`) are left out, and the newest
 `history_max_sessions` are folded, oldest first. Folding treats each session as the newest so
-far, so the import keeps time order: it runs only into a store with nothing folded yet (otherwise
-`history.json` records the skip, and `te history import` refuses with the reason); it holds the
+far, so the import keeps time order with a **watermark**, `history.json["through"]`: the end of
+the newest session the store has folded, live or imported, own or foreign. A session that is
+not seen live is folded only when it ended after the watermark; one that ended before is
+counted as `behind` and never folded (a store with nothing folded has no watermark, which is the
+backfill). A live fold first folds the other agents' sessions that ended before it and after the
+watermark, at most `CATCHUP_PER_FOLD`, so that it does not strand them. The import holds the
 repository's fold lock for its whole run, and while it runs or waits to resume, a session that
 ends stays unfolded and is folded after it; a run stopped by its 30-minute budget resumes the
-plan it saved, in order, and one whose heartbeat went stale is restarted by the next session
-start. A session whose fold fails, or that the import's process died on twice, is left out. An
-imported session is folded only to learn from: against the tools its own log shows
+plan it saved, in order. A run whose heartbeat went quiet for 15 minutes, or whose process is
+gone on the machine that ran it, has stalled: `te status`, `te history` and `te repos` say so,
+and the next session start, `te history import` or `te history import --all` resumes it from
+its saved place; a start takes the import under a lock, so one worker runs it. A stalled import
+that no log leads to any more (a deleted temporary directory) is marked stopped by `te history
+import --all`, its plan kept. A session whose fold fails, or that the import's process died on
+twice, is left out. An imported session is folded only to learn from: against the tools its own
+log shows
 (never today's catalog), with no model call, no deny rule held, written or given back, and a
-ledger record marked `imported` that `te status` and `te repos` count apart. Its turns are
+ledger record marked `imported` (and `origin`, the agent whose log it is) that `te status` and
+`te repos` count apart. Another agent's session (`<source>:<id>` in `folded.json`) is folded
+for micro-skills only: tool pruning never counts it, since tool names differ per agent. This
+agent's own imported sessions' turns are
 replayed through the loop guard with no envelope and no judge, and those that ended green seed
 the envelope. Under `toolprune=auto`, a later fold holds a deny list by itself only where the
 plugin's own sessions alone are enough evidence (`untool.json` counts them apart); the rest waits
@@ -95,7 +111,7 @@ event): no nudge is counted, and there is no one left to redirect.
 | Still stuck after the redirect | terminal abort, in autonomous runs | a one-line **notice** to the person, ending with how to stop the turn on that agent and in that mode (§3); the plugin never stops a turn, and `loopguard: stop` is read as `nudge` | Not every agent's hooks can stop a turn (Codex and Copilot ignore `continue: false`), and the person decides: the benchmark guard's own design note says "interactive callers should map it to a hand-off" |
 | Micro-skills' reading | a domain vocabulary per benchmark (Python/git, Node/web); the proposer's digest counts edited Python files, lists test invocations and flags Python import errors, and its prompt leads with the test command | **generic**, whatever the repository: every ecosystem's interpreters, package tools and test runners at once, builds and checks (`make`, `tsc`, `npm run build`, `cargo check`, ...) as their own intent, every edited file, and a language-neutral digest (failing commands with a normalized error line, paths relative to the repository) and prompt, with tests one topic among several. `vocabulary=python-git` or `node-web` selects an experiment's | A person's repository may be in any language, or several; the experiments keep the paper's reading (its prompt is pinned by a test) |
 | Micro-skills | on in the arms that measured it: the proposer every 5 tasks (on Codex, every 10, over the free layer) | **off by default**; `on` runs the free layer under the proposer, every `microskills_propose_every` sessions (3 by default: after the 2nd, 5th, 8th, ...), since a real session usually carries more work than one benchmark task | The proposer calls a model on the person's plan, and what it injects is derived from command output a repository controls: turning it on is the person's call. In the experiments the free layer alone formed almost nothing once the harness set each environment up properly, so `on` keeps the proposer |
-| Optimizer model | the agent's own model, so overhead could not look cheaper than its arm | the cheapest capable model on the user's own agent CLI (`paid_model`; when empty, `haiku` on Claude Code, the agent's default model on Codex and Pi, and on Copilot a concrete `COPILOT_MODEL` or a BYOK provider's Haiku): the proposer when micro-skills is on, the loop guard's judge and redirect writer whenever the guard is on | Every call is still charged to the session ledger |
+| Optimizer model | the agent's own model, so overhead could not look cheaper than its arm | the cheapest capable model on the user's own agent CLI (`paid_model`; when empty, `opus` on Claude Code, the agent's default model on Codex and Pi, and on Copilot a concrete `COPILOT_MODEL` or a BYOK provider's Opus; never Haiku): the proposer when micro-skills is on, the loop guard's judge and redirect writer whenever the guard is on | Every call is still charged to the session ledger |
 
 ## 3. Verified agent behaviour
 
@@ -226,8 +242,8 @@ feature flags):
   includes the `cacheWriteTokens`, which the ledger splits out.
 * **The plugin's own model calls under BYOK.** With `COPILOT_MODEL=auto` (the subscription's router) in the
   environment, `copilot -p` without a model answered nothing. The side call now names a model:
-  `paid_model`, else a concrete `COPILOT_MODEL`, else `claude-haiku-4-5` on an Anthropic
-  provider. It answered, and was priced from its own session log. The local capture behind
+  `paid_model`, else a concrete `COPILOT_MODEL`, else (since TEO-1472) `claude-opus-5-5` on an Anthropic
+  provider; the check described here ran on `claude-haiku-4-5`. It answered, and was priced from its own session log. The local capture behind
   `refresh-catalog` and `measure` mimics the person's model family, so it records the same
   built-in tools (`edit`/`create` for Claude models, not `apply_patch`). Copilot 1.0.83 does not
   pass its `COPILOT_PROVIDER_*` variables to the hooks, so with BYOK set through them the side
@@ -686,6 +702,39 @@ was not.)
 * **Side call, verified on 1.0.70.** With the side call's flags, the run's recorded tool list held
   only `read_file`, and a prompt asking it to create a file left none.
 
+**Factory Droid 1.12.1 -- checked 2026-11-16** in a disposable profile (`FACTORY_HOME_OVERRIDE`
+pointing at a temporary directory, no credentials), from Droid's docs (`docs.factory.com`,
+`harness/plugins.md` and `hooks.md`) and its own output. Without credentials `droid exec` stops
+at authentication, after `SessionStart` and before any model call; its `SessionEnd` still runs.
+* **Install.** `droid plugin marketplace add <checkout>` reads `.factory-plugin/marketplace.json`,
+  registers it under the checkout's directory name, and `droid plugin install
+  tokeneconomizer@<that name> --scope user` copies the plugin directory, with its working-tree
+  contents, to `<factory home>/plugins/cache/<marketplace>-<hash>/<plugin>-<hash>/<version>`. The
+  copy has no symlinks, so `lib/` is empty; `scripts/te_bootstrap.py` finds the package in the
+  checkout that `plugins/known_marketplaces/<marketplace>-<hash>.json` records (`entry.source.path`,
+  `entry.installLocation`).
+* **Hook file.** Droid reads `hooks/hooks.json`, Claude Code's file, and expands
+  `${CLAUDE_PLUGIN_ROOT}`. It warns that `PostToolUseFailure` "is not supported by Droid" (on
+  stderr in `droid exec`, and in `droid plugin list`) and runs the other events. A manifest
+  `hooks` path is read beside `hooks/hooks.json`, not instead of it, so a Droid-only file would
+  run every hook twice; there is none.
+* **Payloads.** Claude Code's fields: `session_id`, `transcript_path` (`<factory
+  home>/sessions/<cwd slug>/<id>.jsonl`), `cwd`, `permission_mode` (`auto-low` here; Droid's
+  modes are its own), `hook_event_name`, with `source` on `SessionStart` and `reason`,
+  `session_duration_ms` and `message_count` on `SessionEnd`. The hook environment has
+  `FACTORY_PROJECT_DIR`, `DROID_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`; the tool shell has
+  `FACTORY_SESSION_ID`. The plugin tells Droid from Claude Code by the transcript's directory or
+  the permission mode (`hosts.detect`).
+* **Observed through the plugin.** `te-hook` ran from the install copy, recorded the session under
+  the `droid` host, answered `SessionStart` with `hookSpecificOutput.additionalContext` (Droid
+  logged the reply in the session's hook row), and folded the session at `SessionEnd`.
+* **Not observed.** That the start context reaches the model (documented, not checked without a
+  model call), `UserPromptSubmit` and tool events, resume, and slash commands. An earlier check of
+  Droid's hooks (the same version) saw no `PostToolUse` for a shell command that failed.
+* **Side calls: none** (`sidecall.NO_SIDE_CALLS`). `droid exec` refuses an empty tool list, and its
+  default read-only autonomy keeps Read, Grep, LS, FetchUrl and WebSearch; `--only-tools TodoWrite`
+  leaves only its planning tool, which is untried as a completion.
+
 ## 4. State and privacy
 
 All state is local, under `$TOKENECONOMIZER_HOME` (default `~/.tokeneconomizer`), one directory
@@ -724,11 +773,12 @@ Which repository a session belongs to (`plugin/paths.py`, `plugin/repos.py`):
   `merged/`, displaced learned state to `premerge-*`. `te repos merge KEY [INTO]` joins two by
   hand, for state whose checkouts are gone.
 
-Besides the logs of the sessions whose hooks it sees, the plugin reads Claude Code's own logs
-once per repository, for the import of its earlier sessions (with `history_import` on, or `te
-history import`; off by default):
-the head of each log under `~/.claude/projects/` (or `CLAUDE_CONFIG_DIR`, and `history_dirs`), to
-tell which are the repository's, and those in full.
+Besides the logs of the sessions whose hooks it sees, the plugin reads every agent's own session
+store on the machine, for the import of earlier and other agents' sessions (with
+`history_import` on, the default, or `te history import`): the head of each log (its directory,
+id and time; cached in `history-cache.json` by path, mtime and size), to tell which repository
+it belongs to, and those of the repository in full. `history_sources` narrows the agents read;
+`history_sources=self` reads this agent's own only.
 
 The state directory, like the agents' own session logs it is derived from, is private to you:
 the plugin creates it `0700` and its files `0600`, and tightens a looser one it finds.
@@ -746,9 +796,9 @@ it, of `toolprune measure` on Claude Code. Those calls send
 masked, never file contents — through your own agent CLI (`claude -p` / `codex exec` /
 `copilot -p` / `pi -p` / `opencode run` / `grok -p` / `hermes chat`), billed where your session is. The proposer keeps the digests of the last eight
 sessions with its state, raw commands and output capped, so that each run sees more than the
-session that just ended. Sessions imported from Claude Code's history call no model, but their
+session that just ended. Sessions imported from the agents' history call no model, but their
 digests join that window, so the proposer's next call can include digests of sessions from
-before the plugin.
+before the plugin, and of other agents' sessions.
 
 The deny-list writer adds and removes only deny rules it recorded adding, never one you wrote, and
 adds a `settings.local.json` it creates to `.git/info/exclude`. A repository decides what its
@@ -818,6 +868,40 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   agy versions (unknown, not zero), and the transcript names no model, so session cost is priced
   on the ledger's labelled fallback. macOS and Linux only: agy runs hook commands through
   `cmd /c` on Windows, and the launcher is a POSIX shell script.
+* **Amp (`amp`, experimental)** — micro-skills and the loop guard, through a plugin
+  (`plugin/amp/tokeneconomizer.ts`) written against Amp 0.0.1794283240 and the plugin API that
+  `amp plugins show-docs` prints. What was captured live: `amp plugins list` loads the plugin
+  (it runs the plugin's code) and lists its four events and three commands; `amp plugins exec`
+  dispatches one event through the real runtime, which runs under Amp's own binary with the
+  plugin's directory as its working directory, so the repository comes from
+  `ctx.workspaceRoot` (a `file://` URI) and `amp -x` is told apart by the parent process's
+  arguments. Amp keeps no thread on the machine (`amp threads export` downloads one from the
+  server), so the plugin writes its own copy, `~/.tokeneconomizer/amp-threads/<id>.jsonl`, from
+  each `agent.end`'s messages, and `trace/amp.py` reads it and an export's JSON alike. There is no
+  system-prompt hook: context is appended to the user's message at `agent.start` (hidden from
+  the UI, inside `<tokeneconomizer>` tags that the reader strips), and a redirect to the tool
+  result at `tool.result`. There is no session end: a thread is handed over at the plugin's
+  `onDispose` (about 3 seconds), after `amp -x`'s single turn, or by the next session start
+  once its copy has been quiet for ten minutes. No `tool.call` handler, so nothing is ever
+  blocked; tool pruning is not implemented. `amp -x` always runs a full agent with tools, so the
+  plugin makes no model call through Amp (`sidecall.NO_SIDE_CALLS`): no paid proposer, no judge,
+  and the loop guard acts only on its judge-free backstop. Not yet seen: a real interactive
+  turn with the plugin loaded, and the wording of Amp's way to cancel a turn.
+* **ZeroClaw (experimental)** — micro-skills' LLM-free facts, on 0.9.0's ACP server
+  (`zeroclaw acp`), verified with a scripted local model in a config directory of its own
+  (`tests/test_zeroclaw.py`, `TE_ZEROCLAW_E2E=1`). ZeroClaw has no surface a plugin could use:
+  its WASM plugins are tools, channels and memory backends (`wit/v0`), its hooks config holds two
+  built-in loggers, and the personality files it puts in a system prompt come from the agent's
+  own workspace, not the session's directory. So `plugin/zeroclaw/te_zeroclaw_acp.py` is a relay
+  on the ACP pipe that the client runs in place of `zeroclaw acp`: it passes every line through,
+  reads the session's events off it, and puts context in front of the next `session/prompt` as an
+  extra text part (ACP gives a client no way into a running turn, so no redirect can be delivered).
+  The session is folded at `session/close`, `session/stop` or the pipe's end, from ZeroClaw's
+  own store (`<config dir>/data/sessions/acp-sessions.db`, `trace/zeroclaw.py`), which records
+  no exit code (a failure is a result starting with one of ZeroClaw's error prefixes) and no token
+  counts (sessions are not priced). The plugin makes no model call through ZeroClaw
+  (`sidecall.NO_SIDE_CALLS`): `zeroclaw agent -m` runs a whole agent turn, tools included, and
+  turning them off would mean writing the person's config. Tool pruning is not implemented.
 * **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s

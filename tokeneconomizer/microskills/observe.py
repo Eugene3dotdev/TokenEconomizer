@@ -13,6 +13,7 @@ session.
 import os
 import posixpath
 import re
+import shlex
 from dataclasses import dataclass
 
 from ..trace import call_cwds, load_trajectory, strip_rtk_prefix
@@ -115,7 +116,14 @@ _TOOL_LAUNCH_RE = re.compile(r"^(uvx|uv\s+tool\s+run|pipx\s+run)\s+")
 _INTERP_VERSIONED_RE = re.compile(r"^(?:python|node)\d(?:\.\d+)?$")
 _ENV_ASSIGN_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
 _ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_WRAP_RE = re.compile(r"^/bin/(?:ba)?sh\s+-l?c\s+(.*)$", re.S)
+# An agent's shell wrapper: Claude Code and Copilot run `/bin/bash -lc`, Codex `bash -lc`, or
+# the login shell its environment names (`/etc/profiles/per-user/u/bin/zsh -c` under Nix).
+_WRAP_RE = re.compile(r"^(?:\S*/)?(?:ba|z)?sh\s+-l?c\s+(.*)$", re.S)
+# Nushell run the same way (`nu -c '<script>'`, `nu -l -c`, `nu --login --commands`): where
+# the person's shell is Nu, agents wrap nearly every command in it. A simple Nu command -- an executable and its words, `;`, `|` and `cd` -- reads as the shell
+# command it runs; what only Nu writes (`$env.X = ...`, `| from json`) classifies as nothing.
+_NU_WRAP_RE = re.compile(r"^(?:\S*/)?nu\s+(?:(?:-l|--login|-n|--no-config-file)\s+)*"
+                         r"(?:-c|--commands)\s+(.*)$", re.S)
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.S)
 _URL_HOST_RE = re.compile(r"https?://([^/\s'\"`]+)")
 
@@ -124,7 +132,8 @@ _URL_HOST_RE = re.compile(r"https?://([^/\s'\"`]+)")
 ERROR_CLASSES = (
     ("module_missing", re.compile(r"ModuleNotFoundError|No module named|Cannot find module|"
                                   r"ERR_MODULE_NOT_FOUND", re.I)),
-    ("command_missing", re.compile(r"command not found|: not found\b|is not recognized", re.I)),
+    ("command_missing", re.compile(r"command not found|: not found\b|is not recognized|"
+                                   r"Command `[^`\s]+` not found", re.I)),
     # The interpreter started, but the script it was told to run is not where it looked:
     # `python runtests.py` outside the directory that has it.
     ("script_missing", re.compile(r"can't open file .*No such file or directory", re.I)),
@@ -141,9 +150,11 @@ ERROR_CLASSES = (
 )
 NETWORK_ERRORS = frozenset({"connection_refused", "name_resolution", "unreachable"})
 # The command a "not found" line names: `bash: ruff: command not found`, `/bin/sh: 1: ruff: not
-# found`, `zsh: command not found: ruff`, `'ruff' is not recognized ...`.
-_NOT_FOUND_NAME_RE = re.compile(r"([^\s:'\"]+):\s+(?:command\s+)?not found\b(?!:)|"
-                                r"command not found:\s+(\S+)|'([^']+)' is not recognized", re.I)
+# found`, `zsh: command not found: ruff`, `'ruff' is not recognized ...`, and Nu's
+# "Command `ruff` not found".
+_NOT_FOUND_NAME_RE = re.compile(r"([^\s:'\"`]+):\s+(?:command\s+)?not found\b(?!:)|"
+                                r"command not found:\s+(\S+)|'([^']+)' is not recognized|"
+                                r"Command `([^`\s]+)` not found", re.I)
 FORM_ERRORS = frozenset({"module_missing", "command_missing", "script_missing",
                          "usage_error", "permission_denied"})
 
@@ -164,18 +175,46 @@ _PROBE_HIT = {
 # observations
 # --------------------------------------------------------------------------------------
 def unwrap(cmd):
-    """Strip an agent's `/bin/bash -lc "<cmd>"` wrapper, if present."""
+    """Strip an agent's shell wrappers (`/bin/bash -lc "<cmd>"`, `nu -c '<cmd>'`, one inside the
+    other), if present."""
     cmd = cmd or ""
-    m = _WRAP_RE.match(cmd.strip())
+    for _ in range(3):
+        inner = _unwrap_once(cmd)
+        if inner is None:
+            break
+        cmd = inner
+    return cmd
+
+
+def _unwrap_once(cmd):
+    m = _WRAP_RE.match(cmd.strip()) or _NU_WRAP_RE.match(cmd.strip())
     if not m:
-        return cmd
+        return None
     inner = m.group(1).strip()
+    # The script is one shell word, however it is quoted: Codex's argv `[bash, -lc, script]` is
+    # joined with `shlex.join`, which spells a quote inside the script as `'"'"'`.
+    try:
+        words = shlex.split(inner)
+    except ValueError:
+        words = None
+    if words is not None and len(words) == 1:
+        return words[0]
     if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in "\"'":
         q = inner[0]
         inner = inner[1:-1]
         if q == '"':
             inner = inner.replace('\\"', '"').replace("\\$", "$").replace("\\\\", "\\")
     return inner
+
+
+def shell_segments(cmd):
+    """`segments` of a command with its wrappers stripped, a wrapper that is one segment of a
+    longer command (`cd sub && nu -c 'pytest'`) included."""
+    out = []
+    for seg in segments(unwrap(cmd)):
+        inner = unwrap(seg)
+        out.extend(segments(inner) if inner != seg else [seg])
+    return out
 
 
 def segments(cmd):
@@ -306,7 +345,7 @@ def classify_command(cmd, call_index=0, vocab=None, cwd="", root=None, top=None)
     carried = ""
     here = cwd or ""
     cd = f"cd {here} &&" if here else ""
-    for seg in segments(unwrap(cmd)):
+    for seg in shell_segments(cmd):
         # Transparent wrappers first: `K=V rtk pytest`, `rtk K=V pytest` and `rtk proxy pytest`
         # are all a pytest run. rtk's Codex mode puts that prefix on every command the agent
         # types (trace.strip_rtk_prefix), and a first-token vocabulary that did not remove it
@@ -363,7 +402,8 @@ def classify_command(cmd, call_index=0, vocab=None, cwd="", root=None, top=None)
                 toks = toks[1:] if toks[0] != "timeout" else toks[2:]
         if not toks:
             continue
-        head = toks[0]
+        # Nu's `^cmd` runs the external `cmd`.
+        head = toks[0][1:] if toks[0].startswith("^") and len(toks[0]) > 1 else toks[0]
         base = head.rsplit("/", 1)[-1]
         rest = toks[1:]
         o = _classify(head, base, rest, body, prefix, seg, call_index, vocab)
@@ -530,7 +570,8 @@ def _test_labels(o):
     toks = _tokens(o.segment)
     last = (o.form.split() or [""])[-1]
     start = next((i + 1 for i, t in enumerate(toks)
-                  if t == last or t.lstrip("./") == last or t.endswith("/" + last)), len(toks))
+                  if t.lstrip("^") == last or t.lstrip("./") == last or t.endswith("/" + last)),
+                 len(toks))
     out, skip, prev = [], False, ""
     for t in toks[start:]:
         if skip:
@@ -567,11 +608,30 @@ def label_rule(a, b):
     return None
 
 
+# A variable whose name or value says credential is never recorded: a fact is persisted and
+# stated to every later session in the repository, across agents, and must not carry one.
+_SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|PASSW|PASSPHRASE|(?:^|_)KEY(?:_|$)|API_?KEY|AUTH|"
+                             r"CREDENTIAL|COOKIE|PRIVATE", re.I)
+_SECRET_VALUE_RE = re.compile(r"^(?:sk-|sk_|ghp_|gho_|ghs_|ghu_|github_pat_|xox[abprs]-|AKIA|"
+                              r"ASIA|eyJ|glpat-|npm_|pypi-|hf_|AIza|op://|dop_v1_|lin_api_)")
+
+
+def looks_secret(name, value):
+    """Whether an environment setting may be a credential: by the variable's name, by a known
+    token prefix, or by a long value mixing letters and digits that is not a path or a version."""
+    if _SECRET_NAME_RE.search(name or "") or _SECRET_VALUE_RE.match(value or ""):
+        return True
+    v = value or ""
+    return (len(v) >= 32 and any(c.isdigit() for c in v) and any(c.isalpha() for c in v)
+            and "/" not in v and "." not in v)
+
+
 def _env_calls(cmd, out, success):
     """What one call says about environment variables: those its output asks for, and those
-    its command sets (inline, exported or in the code it runs)."""
+    its command sets (inline, exported or in the code it runs), credentials left out."""
     sets = {m.group(1): m.group(3) for m in _ENV_PREFIX_RE.finditer(cmd)}
     sets.update({m.group(1): m.group(2) for m in _ENV_INCODE_RE.finditer(cmd)})
+    sets = {k: v for k, v in sets.items() if not looks_secret(k, v)}
     return {"need": sorted(set(_ENV_NEED_RE.findall(out or ""))), "sets": sets,
             "ok": bool(success) and not _FAILED_RE.search(out or "")}
 
@@ -644,7 +704,7 @@ def observe_task(transcript_path, vocab=None):
         # Pass-through segments (a leading `cd`, a trailing `| head`, an `echo ---`
         # separator) neither add evidence nor pollute the output, so they do not break a
         # call's homogeneity; filters that rewrite content (grep, sed, awk, wc) do.
-        n_seg = sum(1 for sg in segments(unwrap(cmd))
+        n_seg = sum(1 for sg in shell_segments(cmd)
                     if (sg.split() or [""])[0].rsplit("/", 1)[-1] not in _PASSTHROUGH)
         homogeneous = n_seg == len(obs) and len({o.intent for o in obs}) == 1
         hint = _exit_code_hint(out)

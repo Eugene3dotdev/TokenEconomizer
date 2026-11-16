@@ -1,0 +1,14 @@
+{
+  "name": "tokeneconomizer",
+  "owner": {
+    "name": "TokenEconomizer authors"
+  },
+  "description": "TokenEconomizer: experience-driven black-box cost control for coding agents.",
+  "plugins": [
+    {
+      "name": "tokeneconomizer",
+      "source": "./plugin",
+      "description": "Micro-skills learned per repository and a failure-loop guard."
+    }
+  ]
+}

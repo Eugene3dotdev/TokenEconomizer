@@ -8,13 +8,16 @@ session as an ordered list of `(tool_name, args, result_text, success)` calls th
 |---|---|
 | `calls.py` | `load_trajectory` (format sniffed per file), `call_cwds`, `tool_usage`, `strip_rtk_prefix` |
 | `catalog.py` | the tool list a session loaded, from whichever source the agent publishes |
+| `amp.py` | Amp threads: the plugin's copy of a thread or an `amp threads export`, written as a Claude transcript; prompts and usage (Amp keeps no thread on the machine) |
 | `antigravity.py` | Antigravity CLI (`agy`) transcripts: results paired with their calls, read whole by the fold and a few steps at a time by the hook; usage |
 | `claude.py` | Claude Code transcripts: calls with the shell's directory, usage by message id, subagents, deferred tools |
 | `codex.py` | `codex exec --json` streams; a session's rollout file, converted to that stream; usage |
 | `copilot.py` | Copilot CLI event logs: calls, usage, prompt-turns, MCP servers |
 | `cursor.py` | Cursor Agent hook events, normalized to a Claude-shaped trajectory; usage is unavailable |
+| `droid.py` | Factory Droid sessions: Anthropic-block messages written as a Claude transcript, Droid's tool names mapped; no usage in the log |
 | `grok.py` | Grok Build sessions: `updates.jsonl` (ACP updates) written as a Claude transcript; prompts and usage from its session files |
 | `hermes.py` | Hermes Agent sessions: a copy of a session's `state.db` rows without the conversation's words, written as a Claude transcript; usage |
+| `zeroclaw.py` | ZeroClaw's ACP session store: a session's rows, without the conversation's words, written as a Claude transcript; failures by ZeroClaw's error prefixes; no token counts |
 | `pi.py` | Pi's session tree: the active branch, written as a Claude transcript; usage |
 | `jsonl.py` | line and record readers shared by the above |
 

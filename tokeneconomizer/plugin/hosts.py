@@ -60,6 +60,13 @@ RESULT_CAP = 20000      # characters of a tool result the guard folds (errors li
 PROGRESS = "_progress"
 
 
+def _excluded_store(db):
+    """Is an agent's session database in an excluded directory (`privacy`)? Then it is not
+    opened, and the session is left as the copy, if any, stands."""
+    from . import privacy
+    return privacy.live(None, os.environ, db)
+
+
 class FoldLater(Exception):
     """A finished session's log cannot be had now but may be later: it stays unfolded."""
 
@@ -219,16 +226,6 @@ class Host:
     def tool_usage(self, trace_path):
         return trace.tool_usage(trace_path)
 
-    # Whether the agent keeps its sessions' logs where the plugin can read the ones from before
-    # it was installed (`history`).
-    keeps_history = False
-
-    def history(self, env, extra_dirs=()):
-        """The agent's own session logs, for importing a repository's earlier sessions:
-        [{"session_id", "folder", "path", "mtime", "size"}]. Nothing, where the agent keeps none
-        the plugin reads."""
-        return []
-
 
 def _failure_response(p):
     """A PostToolUseFailure payload's `error` as a response; None for any other payload. A
@@ -317,32 +314,6 @@ class ClaudeCode(Host):
 
     def tool_usage(self, trace_path):
         return trace.claude_tool_usage(os.path.realpath(trace_path))
-
-    keeps_history = True
-
-    def history(self, env, extra_dirs=()):
-        """Every top-level log under `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`)
-        and the `extra_dirs` (each a `projects` folder, or a config folder holding one); a
-        session filed in two of them is listed once, from the first."""
-        dirs = [trace.claude_projects_dir(env)]
-        for d in extra_dirs or ():
-            d = os.path.expanduser(str(d))
-            dirs.append(os.path.join(d, "projects") if os.path.isdir(os.path.join(d, "projects"))
-                        else d)
-        out, seen, seen_dirs = [], set(), set()
-        for d in dirs:
-            real = os.path.realpath(d)
-            if real in seen_dirs:
-                continue
-            seen_dirs.add(real)
-            for folder, path, mtime, size in trace.claude_history_logs(d):
-                sid = os.path.basename(path)[:-len(".jsonl")]
-                if sid in seen:
-                    continue
-                seen.add(sid)
-                out.append({"session_id": sid, "folder": folder, "path": path, "mtime": mtime,
-                            "size": size})
-        return out
 
 
 _CODEX_SHELL = {"bash", "shell", "exec_command", "local_shell", "unified_exec",
@@ -454,6 +425,7 @@ class OpenCode(Host):
       * opencode's mode in `TE_OPENCODE_MODE`: `run` (headless, `opencode run`) or `tui`.
     """
     name = "opencode"
+    keeps_copy = True                  # the plugin writes the session's export (privacy.EXCLUDED_KEY)
     prompt_context = True              # the plugin appends it to the system prompt
     interrupt = "Press Esc to interrupt it."
     end_run = "Press Ctrl+C to end the run."
@@ -525,6 +497,98 @@ class OpenCode(Host):
                     os.remove(tmp)
                 except OSError:
                     pass
+        return transcript_path
+
+
+class Amp(Host):
+    """Amp (ampcode CLI), through the plugin in `plugin/amp/`.
+
+    Amp has no hook protocol of its own -- plugins are TypeScript functions on its event bus,
+    run by Bun inside Amp -- so the plugin speaks THIS one on Amp's behalf, as the Pi extension
+    does. What it sends:
+
+      * `session_id`, the thread id (`T-...`); `cwd`, Amp's workspace root (the plugin process
+        itself runs in the plugin's directory);
+      * `prompt_id`, which it numbers itself, for the turn identity Amp does not stamp;
+      * `transcript_path`, the plugin's copy of the thread, `<state root>/amp-threads/<thread
+        id>.jsonl` (`trace/amp.py`): Amp keeps no thread on the machine. Where that copy holds
+        no prompt, the fold asks Amp for the thread instead (`complete`);
+      * `tool_response = {content, isError, exit_code}`, with `exit_code` from the shell tool's
+        `exitCode`;
+      * Amp's mode in `TE_AMP_MODE`: `execute` (headless, `amp -x`) or `interactive`.
+
+    Context reaches the model only as text appended to the person's message (`agent.start`'s
+    returned `message`); the thread keeps that message, so a resumed thread carries it.
+    """
+    name = "amp"
+    prompt_context = True              # the plugin appends it to the prompt's message
+    keeps_copy = True                  # the plugin writes the thread's copy (privacy.EXCLUDED_KEY)
+    # From Amp's own key hints, not yet seen in a run: Esc cancels the turn; `amp -x` ends on
+    # Ctrl+C.
+    interrupt = "Press Esc to cancel the turn."
+    end_run = "Press Ctrl+C to end the run."
+    STATE_DIR = "amp-threads"
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or "")
+
+    def headless(self, env, transcript=None):
+        return str(env.get("TE_AMP_MODE", "")).strip() == "execute"
+
+    def tool_call(self, p):
+        name, args, text, code = super().tool_call(p)
+        mapped, margs = trace.amp_tool(name, args)
+        return ("bash" if mapped == "Bash" else mapped), margs, text, code
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "amp_trace.jsonl")
+        n = trace.amp_thread_to_claude(transcript_path, out)
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.amp_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.amp_thread_usage(transcript_path)
+
+    def complete(self, transcript_path, session_id, cwd=None, session=None):
+        """The plugin's copy of the thread, or, where it holds no prompt (the plugin was loaded
+        after the thread's turns, or could not write), Amp's own export of it, saved beside the
+        copy as `<thread id>.json`. `amp threads export` fetches the thread from Amp's server,
+        signed in as the person is; it sends nothing. The copy stays as it was if Amp has
+        nothing, or cannot be reached."""
+        import subprocess
+        from .paths import state_root
+        from .sidecall import program
+        if (trace.amp_prompt_count(transcript_path or "")
+                or not re.fullmatch(r"T-[\w-]+", session_id or "")):
+            return transcript_path
+        path = os.path.join(state_root(), self.STATE_DIR, f"{session_id}.json")
+        env = dict(os.environ, TE_SIDECALL="1")
+        try:
+            out = subprocess.run([*program(os.environ.get("TE_AMP_CLI") or "amp"), "threads",
+                                  "export", session_id], capture_output=True, encoding="utf-8",
+                                 errors="replace", timeout=60, env=env,
+                                 stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return transcript_path
+        if out.returncode != 0 or not (out.stdout or "").lstrip().startswith("{"):
+            return transcript_path
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(out.stdout)
+            if trace.amp_prompt_count(tmp):
+                os.replace(tmp, path)
+                return path
+        except OSError:
+            pass
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         return transcript_path
 
 
@@ -747,6 +811,8 @@ class Hermes(Host):
         path = transcript_path or os.path.join(state_root(), "hermes-sessions",
                                                f"{session_id}.json")
         db = os.path.join(session.get("hermes_home") or hermes_home(), "state.db")
+        if _excluded_store(db):
+            return transcript_path
         if trace.hermes_export(db, session_id, path) or os.path.exists(path):
             return path
         if time.time() - self.last_active(path, session) < self.FOLD_RETRY_S:
@@ -1100,6 +1166,78 @@ class Grok(Host):
         return trace.grok_session_usage(transcript_path)
 
 
+class Droid(Host):
+    """Factory Droid, through the plugin's own Droid manifest (`.factory-plugin/plugin.json`).
+    Verified on 1.12.1 (2026-11-16) in a disposable profile (`FACTORY_HOME_OVERRIDE`).
+
+    Droid speaks Claude Code's hook contract (snake_case payloads on stdin, `hookSpecificOutput`
+    on stdout), with these differences:
+
+      * It reads the plugin's `hooks/hooks.json`, Claude Code's file, and runs it with no
+        `--host`; `detect` tells it apart. A manifest `hooks` path adds a file rather than
+        replacing that one, so there is no Droid-only hook file. Droid names the one event it
+        lacks (`PostToolUseFailure`) in a warning and runs the others.
+      * A payload carries `session_id`, `transcript_path` (`<factory home>/sessions/<cwd
+        slug>/<id>.jsonl`, the log `trace.droid` reads), `cwd`, `permission_mode` (`off`,
+        `spec`, `auto-low`, `auto-medium`, `auto-high`) and `hook_event_name`; SessionStart
+        adds `source` (`startup`, `resume`, `clear`, `compact`), SessionEnd `reason`. The
+        hook environment has `FACTORY_PROJECT_DIR`; the tool shell has `FACTORY_SESSION_ID`.
+      * `UserPromptSubmit` names the prompt's message (`message_id`), the turn's identity.
+      * There is no `PostToolUseFailure`, and `PostToolUse` does not come for a shell command
+        that failed (exit 127 seen), so the live loop guard sees only the calls that succeeded.
+        A cancelled turn sends `Notification`, not `Stop`; the next prompt closes it.
+      * Tools have Droid's names (`Execute`, `Create`, `ApplyPatch`); `trace.droid_tool` maps
+        them, and a shell result's exit status is read from its `[Process exited with code N]`
+        line where it has one.
+      * No side calls (`sidecall.NO_SIDE_CALLS`).
+    """
+    name = "droid"
+    prompt_context = True              # documented: UserPromptSubmit additionalContext is added
+    interrupt = "Press Esc to interrupt it."
+    end_run = "Press Ctrl+C to end the run."
+    PERMISSION_MODES = frozenset({"off", "spec", "auto-low", "auto-medium", "auto-high"})
+    _EXIT_RE = re.compile(r"\[Process exited with code (-?\d+)\]")
+
+    def cwd(self, p, env):
+        return (p.get("cwd") or env.get("FACTORY_PROJECT_DIR") or env.get("DROID_PROJECT_DIR")
+                or os.getcwd())
+
+    def env_session_id(self, env):
+        return str(env.get("TE_SESSION_ID") or env.get("FACTORY_SESSION_ID") or "")
+
+    def turn_key(self, p):
+        if p.get("hook_event_name") != "UserPromptSubmit":
+            return ""
+        return str(p.get("message_id") or "")
+
+    def tool_call(self, p):
+        name, args = trace.droid_tool(str(p.get("tool_name") or ""), p.get("tool_input"))
+        resp = p.get("tool_response")
+        text = response_text(resp)
+        code = _exit_code(resp)
+        if code is None:
+            m = self._EXIT_RE.search(text[-400:])
+            if m:
+                code = int(m.group(1))
+        return name, args, text, code
+
+    def headless(self, env, transcript=None):
+        # `droid exec` hands its hooks the same payload and environment as the terminal UI; its
+        # command line is what differs. Asked only when a notice is written.
+        return any(_DROID_EXEC.search(a) for a in _ancestor_args())
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "droid_trace.jsonl")
+        n = trace.droid_session_to_claude(transcript_path, out) if transcript_path else None
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.droid_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.droid_session_usage(transcript_path)
+
+
 def copilot_home(env=None):
     env = os.environ if env is None else env
     return env.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")
@@ -1166,6 +1304,100 @@ class Copilot(Host):
             time.sleep(0.25)
 
 
+class ZeroClaw(Host):
+    """ZeroClaw (zeroclaw-labs/zeroclaw), through the ACP relay in `plugin/zeroclaw/`.
+
+    ZeroClaw has no hook of this shape, nor any plugin surface that sees a session: its WASM
+    plugins are tools, channels and memory backends (`wit/v0`), its hooks are two built-in loggers
+    (`[hooks.builtin]`), and the files it reads into a system prompt come from the agent's own
+    workspace, not the session's directory. What a client speaks to it is ACP (`zeroclaw acp`,
+    JSON-RPC on stdio), so the relay sits on that pipe and speaks THIS protocol on ZeroClaw's
+    behalf, as the Hermes plugin does. What it sends:
+
+      * `session_id`, ZeroClaw's ACP `sessionId` (the `session_uuid` of its store);
+      * `cwd`, the directory the client opened the session in (`session/new`'s `cwd`);
+      * `prompt_id`, which it numbers itself, one per `session/prompt`;
+      * `transcript_path`, where the fold writes the session's rows as JSON (`trace/zeroclaw.py`),
+        read from ZeroClaw's store when the session ends (`complete`);
+      * `tool_name` / `tool_input`, from the `tool_call` update, and `tool_response = {content,
+        status}` from its `tool_call_update`;
+      * `stop_reason`, the `session/prompt` answer's `stopReason`, with Stop;
+      * the store it runs against in `ZEROCLAW_CONFIG_DIR` (`--config-dir`, where it was given).
+
+    Context goes in front of the next prompt the relay passes on: the facts with a session's first
+    prompt, the repository map with the prompt it is ranked for. ACP gives a client no way into a
+    turn that is running, so a loop guard redirect cannot be delivered, and an ACP client shows
+    nothing from the agent but what the model says: notices go to the relay's stderr, which the
+    client logs.
+    """
+    name = "zeroclaw"
+    prompt_context = True
+    interrupt = "Cancel the turn in your ACP client (session/cancel)."
+    end_run = "Cancel the turn in your ACP client (session/cancel)."
+    # A loaded session is the transcript ZeroClaw kept, the facts' prompt included.
+    keeps_start_context = True
+    FOLD_RETRY_S = 7 * 86400
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or "")
+
+    def context(self, event, text):
+        if event not in ("SessionStart", "UserPromptSubmit"):
+            return {}
+        return super().context(event, text)
+
+    def stopped_normally(self, p):
+        return str(p.get("stop_reason") or "end_turn") == "end_turn"
+
+    def tool_call(self, p):
+        name, args = trace.zeroclaw_tool(str(p.get("tool_name") or ""), p.get("tool_input"))
+        resp = p.get("tool_response")
+        resp = resp if isinstance(resp, dict) else {"content": resp}
+        text, failed = trace.zeroclaw_result(resp.get("content"))
+        if str(resp.get("status") or "") == "failed":
+            failed = True
+        # A shell call fails only on a non-zero exit, which ZeroClaw does not report.
+        code = (1 if failed else 0) if name == "Bash" else None
+        return name, args, response_text(text), code
+
+    def complete(self, transcript_path, session_id, cwd=None, session=None):
+        """The session as ZeroClaw's store holds it now. The copy stays as it was if the row cannot
+        be read; with no copy either the fold waits, up to `FOLD_RETRY_S`: the store may be busy,
+        or this process, a `te fold` in a shell, may see another install than the session's."""
+        from .paths import state_root
+        if not re.fullmatch(r"[\w-]+", session_id or ""):
+            return transcript_path
+        session = session or {}
+        path = transcript_path or os.path.join(state_root(), "zeroclaw-sessions",
+                                               f"{session_id}.json")
+        config_dir = session.get("zeroclaw_config_dir") or trace.zeroclaw_config_dir()
+        db = os.path.join(config_dir, "data", "sessions", "acp-sessions.db") if config_dir else ""
+        if db and _excluded_store(db):
+            return transcript_path
+        if (db and trace.zeroclaw_export(db, session_id, path)) or os.path.exists(path):
+            return path
+        if time.time() - self.last_active(path, session) < self.FOLD_RETRY_S:
+            raise FoldLater(session_id)
+        return transcript_path
+
+    def last_active(self, transcript_path, session):
+        return float(session.get("updated") or session.get("started") or 0)
+
+    def session_state(self, env):
+        return {"zeroclaw_config_dir": trace.zeroclaw_config_dir(env)}
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "zeroclaw_trace.jsonl")
+        n = trace.zeroclaw_session_to_claude(transcript_path, out)
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.zeroclaw_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.zeroclaw_session_usage(transcript_path)
+
+_DROID_EXEC = re.compile(r"(?:^|[\s/])droid(?:\.\w+)?\s+exec(?:\s|$)")
 _PROMPT_FLAG = re.compile(r"\s(?:-p|--prompt)(?:[\s=]|$)")
 
 
@@ -1193,7 +1425,7 @@ def _ancestor_args(limit=4):
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode,
          "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity}
+         "antigravity": Antigravity, "droid": Droid, "amp": Amp, "zeroclaw": ZeroClaw}
 
 
 def default_host(env=None, recent=None):
@@ -1212,6 +1444,8 @@ def default_host(env=None, recent=None):
         return "cursor"
     if env.get("GROK_SESSION_ID"):
         return "grok"
+    if env.get("FACTORY_SESSION_ID"):          # Droid's tool shell (1.12.1)
+        return "droid"
     return recent if recent in HOSTS else "claude"
 
 
@@ -1224,6 +1458,8 @@ def detect(payload, env=None, hint=None):
         return Antigravity()
     tp = str((payload or {}).get("transcript_path") or "")
     sp = tp.replace("\\", "/")              # a Windows path, with either separator
+    if f"/{Amp.STATE_DIR}/" in sp:
+        return Amp()
     # grok runs Claude Code's plugin hooks, with no `--host`, so it is told from Claude Code
     # first: it alone sends `hookEventName` and keeps its sessions under `~/.grok/sessions`. Its
     # environment names it too, but hooks inherit the parent's environment (a Claude Code
@@ -1237,6 +1473,11 @@ def detect(payload, env=None, hint=None):
         return Codex()
     if "/session-state/" in sp and tp.endswith("events.jsonl"):
         return Copilot()
+    # Droid runs Claude Code's plugin hook file, with no `--host`: it keeps its sessions under
+    # `.factory/sessions` and names permission modes Claude Code has none of (1.12.1).
+    if ("/.factory/sessions/" in sp
+            or str((payload or {}).get("permission_mode") or "") in Droid.PERMISSION_MODES):
+        return Droid()
     # Claude Code always sends a transcript path; Copilot sends none before Stop, and marks its
     # hook processes. (Hooks inherit the parent's environment, so the marker alone would also
     # tag a Claude Code session started from inside Copilot -- hence the transcript test first.)
