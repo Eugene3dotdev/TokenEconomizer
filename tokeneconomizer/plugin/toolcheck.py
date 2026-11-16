@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import adapter as live_adapter
 from .denylist import CODEX_TOGGLES, write_json as _write_json
-from .sidecall import claude_cli, claude_flags, claude_json, program
+from .sidecall import CLAUDE_DEFAULT_MODEL, claude_cli, claude_flags, claude_json, program
 
 
 def verify_copilot(repo_root, servers, cli="copilot"):
@@ -61,7 +61,7 @@ def _init_tools(extra_args, cli=None, timeout=60):
     cli = cli or claude_cli()
     env = dict(os.environ, TE_SIDECALL="1")
     cmd = [cli, "-p", "Reply with OK", "--output-format", "stream-json", "--verbose",
-           "--model", "haiku", "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
+           "--model", CLAUDE_DEFAULT_MODEL, "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
     with tempfile.TemporaryDirectory(prefix="te-probe-", ignore_cleanup_errors=True) as cwd:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, encoding="utf-8", errors="replace", env=env,
@@ -219,8 +219,8 @@ def refresh_catalog(state_root, cli=None, host="claude"):
 def _prompt_tokens(extra_args, cli=None, timeout=180):
     cli = cli or claude_cli()
     env = dict(os.environ, TE_SIDECALL="1")
-    cmd = [cli, "-p", "Reply with exactly: OK", "--output-format", "json", "--model", "haiku",
-           "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
+    cmd = [cli, "-p", "Reply with exactly: OK", "--output-format", "json",
+           "--model", CLAUDE_DEFAULT_MODEL, "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
     # ignore_cleanup_errors: on Windows an MCP server the session started can still hold the cwd
     # when `claude` exits (WinError 32), as in `_init_tools`.
     with tempfile.TemporaryDirectory(prefix="te-measure-", ignore_cleanup_errors=True) as cwd:

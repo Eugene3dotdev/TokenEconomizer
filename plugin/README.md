@@ -933,7 +933,7 @@ you run `toolprune apply`. `status` counts the earlier sessions on their own, by
 | Key | Default | Values |
 |---|---|---|
 | `enabled` | `true` | `false`: the whole plugin is off; its hooks return at once and record nothing |
-| `paid_model` | `""` | model for the plugin's own calls; empty: `haiku` on Claude Code, the agent's own default model on Codex and Pi, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Haiku, else Copilot's own default |
+| `paid_model` | `""` | model for the plugin's own calls; empty: `opus` on Claude Code, the agent's own default model on Codex and Pi, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Opus, else Copilot's own default. Never Haiku |
 | `pi_extensions` | `""` | Pi only: extension files (comma-separated paths) the plugin's own calls load, for a model whose provider an extension registers |
 | `pi_cli` | `""` | Pi only: the `pi` the plugin's own calls run; empty: the first on PATH |
 | `shadow` | `false` | decide and log everything, act on nothing |
@@ -1022,7 +1022,7 @@ a token). No call is sent file contents or your prompts:
 
 Each call is one request through the agent's CLI, which adds its own fixed instructions to the
 prompt; the plugin cannot leave those out, and the cost it records is the whole request's. The
-calls use the model `paid_model` names; when it is empty, `haiku` on Claude Code, and on the other
+calls use the model `paid_model` names; when it is empty, `opus` on Claude Code, and on the other
 agents the default listed under [Settings](#settings). `status` prints the repository's total as
 `plugin overhead`, with its share of all tokens. Per session, the repository's `ledger.jsonl`
 (under `~/.tokeneconomizer/repos/`) has the proposer's tokens in the session's record, under

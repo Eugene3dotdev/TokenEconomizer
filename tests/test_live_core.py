@@ -1209,7 +1209,7 @@ def test_copilot_side_calls_name_a_model_a_byok_provider_can_serve():
     byok = {"COPILOT_PROVIDER_BASE_URL": "https://api.anthropic.com",
             "COPILOT_PROVIDER_TYPE": "anthropic"}
     # `auto` is the subscription's router; a BYOK provider has none, and the call answered nothing
-    assert copilot_model("", dict(byok, COPILOT_MODEL="auto")) == "claude-haiku-4-5"
+    assert copilot_model("", dict(byok, COPILOT_MODEL="auto")) == "claude-opus-5"
     assert copilot_model("", dict(byok, COPILOT_MODEL="claude-sonnet-5")) == "claude-sonnet-5"
     assert copilot_model("claude-opus-5", byok) == "claude-opus-5"           # paid_model wins
     assert copilot_model("", {"COPILOT_MODEL": "auto"}) == ""                # subscription
@@ -1217,7 +1217,26 @@ def test_copilot_side_calls_name_a_model_a_byok_provider_can_serve():
     # OpenRouter wants its own ids, whichever wire Copilot speaks to it
     for wire in ("anthropic", "openai"):
         assert copilot_model("", {"COPILOT_PROVIDER_BASE_URL": "https://openrouter.ai/api",
-                                  "COPILOT_PROVIDER_TYPE": wire}) == "anthropic/claude-haiku-4.5"
+                                  "COPILOT_PROVIDER_TYPE": wire}) == "anthropic/claude-opus-5"
+
+
+def test_side_calls_default_to_opus_and_never_name_haiku(monkeypatch):
+    """The owner's model policy forbids Haiku and pins Opus for the plugin's own Claude calls
+    (the loop guard's judge and the micro-skills proposer)."""
+    import pathlib
+    from tokeneconomizer.plugin import sidecall
+    assert sidecall.CLAUDE_DEFAULT_MODEL == "opus"
+    seen = []
+    monkeypatch.setattr(sidecall, "claude_call",
+                        lambda prompt, model=None, **kw: (seen.append(model), ("", 0))[1])
+    cfg = type("C", (), {"paid_model": ""})()
+    sidecall._host_call("claude", cfg)("judge this")
+    assert seen == ["opus"]
+    pkg = pathlib.Path(sidecall.__file__).resolve().parents[1]
+    hits = [str(p) for p in pkg.rglob("*.py") if p.name != "pricing.py"
+            and any(s in p.read_text(encoding="utf-8")
+                    for s in ('"haiku"', 'claude-haiku-4-5"', 'claude-haiku-4.5"'))]
+    assert hits == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the probe trap is made of sh scripts")

@@ -7,10 +7,10 @@ so no extra API key is needed and the call is billed where the session is:
 
   * Claude Code: `claude -p --output-format json --tools "" --max-turns 1`, with none of the
     person's MCP servers (`--strict-mcp-config` and an empty `--mcp-config`, where the CLI has
-    them), on `paid_model` (default `haiku`). This is a deliberate departure from the
-    experiments, which ran every optimizer call on the agent's own model so overhead could not
-    look cheaper than the arm it was charged to; in a user's session the cheapest capable model
-    is the right default, and the ledger records the real cost either way.
+    them), on `paid_model` (default `CLAUDE_DEFAULT_MODEL`, `opus`). The owner's model policy
+    forbids Haiku and names Opus for the plugin's own calls (the loop guard's judge and the
+    micro-skills proposer), pinned explicitly rather than left to the session's model; the
+    ledger records the real cost either way.
   * Codex: `codex exec --json --disable hooks --ephemeral -s read-only`. Each such call carries
     Codex's full base prompt (~25k tokens, mostly cached) on the user's plan quota, one reason
     micro-skills (whose proposer calls it) defaults off and the loop guard's judge is woken
@@ -289,12 +289,17 @@ def claude_json(stdout):
     return data if isinstance(data, dict) else {}
 
 
-def claude_call(prompt, model="haiku", cli=None, timeout=TIMEOUT_S):
+# The Claude model the plugin's own calls use when `paid_model` is empty. Never Haiku: the
+# owner's model policy forbids it, and names Opus for the judge and the proposer.
+CLAUDE_DEFAULT_MODEL = "opus"
+
+
+def claude_call(prompt, model=CLAUDE_DEFAULT_MODEL, cli=None, timeout=TIMEOUT_S):
     cli = cli or claude_cli()
     with tempfile.TemporaryDirectory(prefix="te-side-", ignore_cleanup_errors=True) as cwd:
         # `--mcp-config` takes several values, so an option follows it, never a bare argument.
         cmd = ([cli, "-p", "--output-format", "json", "--max-turns", "1", "--tools", ""]
-               + claude_no_mcp(cli, cwd) + ["--model", model or "haiku"] + claude_flags(cli))
+               + claude_no_mcp(cli, cwd) + ["--model", model or CLAUDE_DEFAULT_MODEL] + claude_flags(cli))
         out = subprocess.run(cmd, input=prompt, capture_output=True,
                              encoding="utf-8", errors="replace", timeout=timeout, env=_env(),
                              cwd=cwd)
@@ -691,8 +696,9 @@ COPILOT_TOOLS = ("bash", "read_bash", "write_bash", "stop_bash", "list_bash", "v
                  "list_agents", "read_agent", "write_agent", "fetch_copilot_cli_documentation")
 
 
-# The cheapest capable model by BYOK provider type, in the ids that provider expects.
-BYOK_DEFAULT_MODEL = {"anthropic": "claude-haiku-4-5"}
+# The default model by BYOK provider type, in the ids that provider expects (Opus, as
+# `CLAUDE_DEFAULT_MODEL`; never Haiku).
+BYOK_DEFAULT_MODEL = {"anthropic": "claude-opus-5"}
 
 
 def copilot_model(paid_model="", env=None):
@@ -708,7 +714,7 @@ def copilot_model(paid_model="", env=None):
             return v
     base = env.get("COPILOT_PROVIDER_BASE_URL") or ""
     if "openrouter.ai" in base:            # OpenRouter's own ids, on either wire
-        return "anthropic/claude-haiku-4.5"
+        return "anthropic/claude-opus-5"
     if base:
         return BYOK_DEFAULT_MODEL.get((env.get("COPILOT_PROVIDER_TYPE") or "openai").lower(), "")
     return ""
@@ -798,4 +804,4 @@ def _host_call(host_name, config):
         return lambda prompt, _m="agent": codex_call(prompt, model=model)
     if host_name == "copilot":
         return lambda prompt, _m="agent": copilot_call(prompt, model=model)
-    return lambda prompt, _m="agent": claude_call(prompt, model=model or "haiku")
+    return lambda prompt, _m="agent": claude_call(prompt, model=model or CLAUDE_DEFAULT_MODEL)
