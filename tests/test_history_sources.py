@@ -635,4 +635,9 @@ def test_every_agents_shell_wrapper_is_stripped_before_a_command_is_read():
                     "/etc/profiles/per-user/u/bin/zsh -c 'pytest -q'", "zsh -lc 'pytest -q'"):
         assert observe.unwrap(wrapped) == "pytest -q", wrapped
     assert observe.unwrap("pytest -q") == "pytest -q"
-    assert observe.unwrap("nu -c 'pytest -q'") == "nu -c 'pytest -q'"      # not a wrapper
+    assert observe.unwrap("nu -c 'pytest -q'") == "pytest -q"
+    assert observe.unwrap("nu -l -c 'cd sub; pytest -q'") == "cd sub; pytest -q"
+    # Codex's argv `[bash, -lc, script]` joined by `shlex.join`, a quote inside the script.
+    assert observe.unwrap("bash -lc 'nu -l -c '\"'\"'pytest -q'\"'\"''") == "pytest -q"
+    assert observe.unwrap("bash -lc 'pytest -k '\"'\"'a or b'\"'\"''") == "pytest -k 'a or b'"
+    assert observe.unwrap("nu") == "nu" and observe.unwrap("nu script.nu") == "nu script.nu"
