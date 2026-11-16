@@ -436,7 +436,8 @@ def test_the_plugin_directory_is_also_a_pi_package():
     assert "pi-package" in pkg["keywords"]
     (ext,) = pkg["pi"]["extensions"]
     src = open(os.path.join(PLUGIN, ext), encoding="utf-8").read()
-    assert 'join(HERE, "..", "scripts")' in src and '"te-hook", ["--host", "pi"]' in src
+    assert 'join(HERE, "..", "scripts")' in src
+    assert re.search(r'"te-hook",\s*\[\s*"--host",\s*"pi"\s*\]', src)
     # Exactly the dispatcher's five events. Not `tool_call`, the one Pi event that can block a
     # call before it runs: the plugin guards nothing, on Pi as on the hook hosts.
     assert set(re.findall(r'pi\.on\("(\w+)"', src)) == {
