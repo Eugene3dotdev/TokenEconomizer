@@ -1293,6 +1293,97 @@ class Copilot(Host):
             time.sleep(0.25)
 
 
+class ZeroClaw(Host):
+    """ZeroClaw (zeroclaw-labs/zeroclaw), through the ACP relay in `plugin/zeroclaw/`.
+
+    ZeroClaw has no hook of this shape, nor any plugin surface that sees a session: its WASM
+    plugins are tools, channels and memory backends (`wit/v0`), its hooks are two built-in loggers
+    (`[hooks.builtin]`), and the files it reads into a system prompt come from the agent's own
+    workspace, not the session's directory. What a client speaks to it is ACP (`zeroclaw acp`,
+    JSON-RPC on stdio), so the relay sits on that pipe and speaks THIS protocol on ZeroClaw's
+    behalf, as the Hermes plugin does. What it sends:
+
+      * `session_id`, ZeroClaw's ACP `sessionId` (the `session_uuid` of its store);
+      * `cwd`, the directory the client opened the session in (`session/new`'s `cwd`);
+      * `prompt_id`, which it numbers itself, one per `session/prompt`;
+      * `transcript_path`, where the fold writes the session's rows as JSON (`trace/zeroclaw.py`),
+        read from ZeroClaw's store when the session ends (`complete`);
+      * `tool_name` / `tool_input`, from the `tool_call` update, and `tool_response = {content,
+        status}` from its `tool_call_update`;
+      * `stop_reason`, the `session/prompt` answer's `stopReason`, with Stop;
+      * the store it runs against in `ZEROCLAW_CONFIG_DIR` (`--config-dir`, where it was given).
+
+    Context goes in front of the next prompt the relay passes on: the facts with a session's first
+    prompt, the repository map with the prompt it is ranked for. ACP gives a client no way into a
+    turn that is running, so a loop guard redirect cannot be delivered, and an ACP client shows
+    nothing from the agent but what the model says: notices go to the relay's stderr, which the
+    client logs.
+    """
+    name = "zeroclaw"
+    prompt_context = True
+    interrupt = "Cancel the turn in your ACP client (session/cancel)."
+    end_run = "Cancel the turn in your ACP client (session/cancel)."
+    # A loaded session is the transcript ZeroClaw kept, the facts' prompt included.
+    keeps_start_context = True
+    FOLD_RETRY_S = 7 * 86400
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or "")
+
+    def context(self, event, text):
+        if event not in ("SessionStart", "UserPromptSubmit"):
+            return {}
+        return super().context(event, text)
+
+    def stopped_normally(self, p):
+        return str(p.get("stop_reason") or "end_turn") == "end_turn"
+
+    def tool_call(self, p):
+        name, args = trace.zeroclaw_tool(str(p.get("tool_name") or ""), p.get("tool_input"))
+        resp = p.get("tool_response")
+        resp = resp if isinstance(resp, dict) else {"content": resp}
+        text, failed = trace.zeroclaw_result(resp.get("content"))
+        if str(resp.get("status") or "") == "failed":
+            failed = True
+        # A shell call fails only on a non-zero exit, which ZeroClaw does not report.
+        code = (1 if failed else 0) if name == "Bash" else None
+        return name, args, response_text(text), code
+
+    def complete(self, transcript_path, session_id, cwd=None, session=None):
+        """The session as ZeroClaw's store holds it now. The copy stays as it was if the row cannot
+        be read; with no copy either the fold waits, up to `FOLD_RETRY_S`: the store may be busy,
+        or this process, a `te fold` in a shell, may see another install than the session's."""
+        from .paths import state_root
+        if not re.fullmatch(r"[\w-]+", session_id or ""):
+            return transcript_path
+        session = session or {}
+        path = transcript_path or os.path.join(state_root(), "zeroclaw-sessions",
+                                               f"{session_id}.json")
+        config_dir = session.get("zeroclaw_config_dir") or trace.zeroclaw_config_dir()
+        db = os.path.join(config_dir, "data", "sessions", "acp-sessions.db") if config_dir else ""
+        if (db and trace.zeroclaw_export(db, session_id, path)) or os.path.exists(path):
+            return path
+        if time.time() - self.last_active(path, session) < self.FOLD_RETRY_S:
+            raise FoldLater(session_id)
+        return transcript_path
+
+    def last_active(self, transcript_path, session):
+        return float(session.get("updated") or session.get("started") or 0)
+
+    def session_state(self, env):
+        return {"zeroclaw_config_dir": trace.zeroclaw_config_dir(env)}
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "zeroclaw_trace.jsonl")
+        n = trace.zeroclaw_session_to_claude(transcript_path, out)
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.zeroclaw_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.zeroclaw_session_usage(transcript_path)
+
 _DROID_EXEC = re.compile(r"(?:^|[\s/])droid(?:\.\w+)?\s+exec(?:\s|$)")
 _PROMPT_FLAG = re.compile(r"\s(?:-p|--prompt)(?:[\s=]|$)")
 
@@ -1321,7 +1412,7 @@ def _ancestor_args(limit=4):
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode,
          "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity, "droid": Droid, "amp": Amp}
+         "antigravity": Antigravity, "droid": Droid, "amp": Amp, "zeroclaw": ZeroClaw}
 
 
 def default_host(env=None, recent=None):

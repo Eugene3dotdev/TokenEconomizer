@@ -25,7 +25,8 @@ from tokeneconomizer.plugin.paths import repo_identity
 from tokeneconomizer.trace import sources
 
 HOME_KEYS = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "PI_CODING_AGENT_DIR",
-             "GROK_HOME", "HERMES_HOME", "XDG_DATA_HOME", "FACTORY_HOME")
+             "GROK_HOME", "HERMES_HOME", "XDG_DATA_HOME", "FACTORY_HOME", "ZEROCLAW_CONFIG_DIR",
+             "ZEROCLAW_DATA_DIR", "ZEROCLAW_WORKSPACE")
 
 
 @pytest.fixture
@@ -251,6 +252,50 @@ def hermes_db(home, sessions):
     return str(db)
 
 
+def zeroclaw_db(home, sessions):
+    """`<config>/data/sessions/acp-sessions.db` with the tables the reader uses, rows as ZeroClaw
+    0.9.0 writes them (`acp_session_store.rs`); `sessions` is [(sid, cwd, age_s)]. A failed call's
+    result is `Error: ` and its stderr: ZeroClaw keeps no exit code."""
+    db = home / ".zeroclaw" / "data" / "sessions" / "acp-sessions.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db))
+    con.executescript("""
+        CREATE TABLE acp_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_uuid TEXT NOT NULL UNIQUE, agent_alias TEXT NOT NULL,
+            workspace_dir TEXT NOT NULL, interaction_surface TEXT,
+            token_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+            last_activity TEXT NOT NULL, projected_message_count INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE acp_messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+            reasoning_content TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE acp_tool_calls (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER NOT NULL, tool_call_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            event_kind TEXT NOT NULL, payload TEXT NOT NULL, outcome TEXT,
+            created_at TEXT NOT NULL);
+    """)
+    for sid, cwd, age_s in sessions:
+        end = time.time() - age_s
+        at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(end)) + ".123456789+00:00"
+        row = con.execute("INSERT INTO acp_sessions (session_uuid, agent_alias, workspace_dir, "
+                          "created_at, last_activity, projected_message_count) VALUES "
+                          "(?,?,?,?,?,?)", (sid, "default", cwd, _iso(end - 300), at, 4)).lastrowid
+        con.execute("INSERT INTO acp_messages (session_id, role, content, created_at) VALUES "
+                    "(?,?,?,?)", (row, "user", "[CURRENT DATE & TIME: 2026-11-16 10:00:00 +00:00]"
+                                  "\n\nfix the tests", at))
+        for n, (_, args, out, failed) in enumerate(trap_calls(cwd, 0)):
+            msg = con.execute("INSERT INTO acp_messages (session_id, role, content, created_at) "
+                              "VALUES (?,?,?,?)", (row, "assistant", "", at)).lastrowid
+            con.execute("INSERT INTO acp_tool_calls (message_id, tool_call_id, tool_name, "
+                        "event_kind, payload, outcome, created_at) VALUES (?,?,?,?,?,NULL,?)",
+                        (msg, f"c{n}", "shell", "in", json.dumps(args), at))
+            con.execute("INSERT INTO acp_tool_calls (message_id, tool_call_id, tool_name, "
+                        "event_kind, payload, outcome, created_at) VALUES (?,?,?,?,?,?,?)",
+                        (msg, f"c{n}", "shell", "out",
+                         "Error: " + out.split("\n", 1)[-1] if failed else out, "unknown", at))
+    con.commit()
+    con.close()
+    return str(db)
+
 def opencode_v2_db(home, sessions, keep=False):
     """`opencode.db` in the 2.2.x layout (`session_v2`, `session_message` with the kind in its
     `type` column and the flat export shape in `data`, an empty `session_part`); `sessions` is
@@ -373,6 +418,8 @@ def _write(name, home, cwd, sid, i=0, age_s=3600):
         return opencode_db(home, [(sid, cwd, age_s)])
     if name == "amp":
         return amp_copy(home, cwd, sid, i, age_s)
+    if name == "zeroclaw":
+        return zeroclaw_db(home, [(sid, cwd, age_s)])
     raise AssertionError(name)
 
 

@@ -2,14 +2,14 @@
 
 How to install and use TokenEconomizer in Claude Code, Codex, the GitHub Copilot CLI, Pi, Cursor
 (experimental), Grok Build (experimental), opencode (experimental), Hermes Agent (experimental),
-the Antigravity CLI (experimental), Factory Droid (experimental) and Amp (experimental). What the plugin does and why is in the [main README](../README.md); its
+the Antigravity CLI (experimental), Factory Droid (experimental), Amp (experimental) and ZeroClaw (experimental). What the plugin does and why is in the [main README](../README.md); its
 design and the verified behaviour of each agent are in [`docs/PLUGIN.md`](../docs/PLUGIN.md).
 
 - [Before you start](#before-you-start)
 - Install and use it on [Claude Code](#claude-code) · [Codex](#codex) ·
   [Copilot CLI](#copilot-cli) · [Pi](#pi) · [Cursor](#cursor) · [Grok Build](#grok-build) · [opencode](#opencode) ·
   [Hermes Agent](#hermes-agent) · [Antigravity CLI](#antigravity-cli) · [Factory Droid](#factory-droid) ·
-  [Amp](#amp)
+  [Amp](#amp) · [ZeroClaw](#zeroclaw)
 - [What to expect](#what-to-expect) · [Commands](#commands) · [Settings](#settings)
 - [Repository map](#repository-map) · [Using with rtk](#using-with-rtk) ·
   [Model calls and API keys](#model-calls-and-api-keys) · [Troubleshooting](#troubleshooting)
@@ -664,6 +664,52 @@ config set microskills=envfacts`.
 **Uninstall.** `rm ~/.config/amp/plugins/tokeneconomizer.ts`. Optional: `rm -rf
 ~/.tokeneconomizer/amp-threads`.
 
+## ZeroClaw
+
+Experimental: **micro-skills' LLM-free facts**, on ZeroClaw 0.9.0's ACP server (`zeroclaw acp`),
+Linux and macOS. ZeroClaw has no hook or plugin surface that sees a session: its WASM plugins are
+tools, channels and memory backends, its hooks are two built-in loggers, and the files it adds to
+a system prompt come from the agent's own workspace, not the repository. So the plugin is a relay
+on the ACP pipe, in front of `zeroclaw acp`.
+
+**1. Install.** In your ACP client (an editor or harness that runs ZeroClaw over ACP), replace the
+`zeroclaw acp` command with the relay, keeping the arguments:
+
+```sh
+python3 /path/to/TokenEconomizer/plugin/zeroclaw/te_zeroclaw_acp.py acp [--config-dir DIR]
+```
+
+It starts `zeroclaw` (the one on `PATH`, else `~/.local/bin/zeroclaw`; `TE_ZEROCLAW_BIN` names
+another) with the same arguments and passes every line through unchanged, except a prompt that
+the plugin has context for.
+
+**2. Check it.** Run a session in a repository, then `~/.tokeneconomizer/bin/te --host zeroclaw
+status` there. Every command runs from a terminal. Micro-skills is off by default:
+`te --host zeroclaw config set microskills=envfacts`.
+
+**How it works, and what it does not do.**
+
+- The relay turns the ACP session into the plugin's events: `session/new` (or `session/load`) is
+  the session's start, `session/prompt` a prompt, each finished `tool_call` a tool result, the
+  prompt's answer the turn's end, and `session/close`, `session/stop` or the pipe closing its end.
+- Context (the learned facts, and the repository map) goes in front of the next prompt, as an
+  extra text part. ZeroClaw keeps it in the session's transcript.
+- The session is folded from ZeroClaw's own store (`<config dir>/data/sessions/acp-sessions.db`)
+  when it ends. A copy without the conversation's words is kept in
+  `~/.tokeneconomizer/zeroclaw-sessions/`, private to you.
+- ZeroClaw records no exit code: a call counts as failed when its result starts with one of
+  ZeroClaw's error prefixes (`Error: `, `Error executing `, ...).
+- The store records no token counts, so session cost is not priced.
+- ACP gives a client no way into a running turn, so a loop guard redirect cannot be delivered.
+  Notices go to the relay's stderr, which the client logs.
+- The plugin makes no model call through ZeroClaw: `zeroclaw agent -m` runs a full agent turn with
+  its tools, and turning them off would mean writing your ZeroClaw config. So the paid proposer
+  never runs, and the loop guard, which needs a judge's verdict to act, never redirects a turn.
+- Tool pruning is not available. Only ZeroClaw's ACP store is read: an ACP session run without the
+  relay is read later as an earlier session, and conversations held by ZeroClaw's channels or
+  gateway are not read at all.
+
+**Uninstall.** Point your ACP client back at `zeroclaw acp`. Optional: `rm -rf ~/.tokeneconomizer`.
 ## What to expect
 
 The plugin works session by session: what it learns from a repository's earlier sessions is
@@ -751,6 +797,7 @@ How to run them:
 | Antigravity CLI | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host antigravity <command>` |
 | Factory Droid | none (run from a terminal or its shell) | `~/.tokeneconomizer/bin/te --host droid <command>` |
 | Amp | command palette: `TokenEconomizer: status`, `micro-skills`, `history` | `~/.tokeneconomizer/bin/te --host amp <command>` |
+| ZeroClaw | none (run from a terminal) | `~/.tokeneconomizer/bin/te --host zeroclaw <command>` |
 
 `doctor`, `history` and `repomap` run from a terminal (or as `/te …` on Pi); there is no slash command or
 Codex skill for them.
@@ -852,8 +899,9 @@ sessions' logs: Claude Code (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR`
 (`~/.codex/sessions/`, and an OpenClaw agent's embedded Codex home), the Copilot CLI
 (`~/.copilot/session-state/`), Pi (`~/.pi/agent/sessions/`), Grok Build (`~/.grok/sessions/`),
 Hermes (`~/.hermes/state.db`), opencode (`~/.local/share/opencode/opencode.db`), Amp (the
-plugin's own copies in `~/.tokeneconomizer/amp-threads/`, since Amp keeps none) and Factory
-Droid (`~/.factory/sessions/`). With
+plugin's own copies in `~/.tokeneconomizer/amp-threads/`, since Amp keeps none), ZeroClaw
+(`~/.zeroclaw/data/sessions/acp-sessions.db`, or under `ZEROCLAW_CONFIG_DIR`, and every
+`~/.zeroclaw-*` install beside it) and Factory Droid (`~/.factory/sessions/`). With
 `history_import` on (the default), the first session start in a repository reads that
 repository's sessions from all of them, in a background `te history import`, oldest first and
 each once, without any model call; later session starts catch up on the other agents' sessions
@@ -875,7 +923,7 @@ you run `toolprune apply`. `status` counts the earlier sessions on their own, by
 | Key | Default | What it sets |
 |---|---|---|
 | `history_import` | `true` | `false`: learn only from sessions the plugin sees end |
-| `history_sources` | `all` | which agents' logs are read: `all`, `self` (this agent's own only), or names separated by commas (`claude`, `codex`, `copilot`, `pi`, `grok`, `hermes`, `opencode`, `amp`, `droid`) |
+| `history_sources` | `all` | which agents' logs are read: `all`, `self` (this agent's own only), or names separated by commas (`claude`, `codex`, `copilot`, `pi`, `grok`, `hermes`, `opencode`, `amp`, `zeroclaw`, `droid`) |
 | `history_max_sessions` | `200` | the most recent earlier sessions read |
 | `history_days` | `365` | how far back, in days |
 | `history_dirs` | none | further Claude Code `projects` folders to read, separated by commas |

@@ -53,6 +53,10 @@ so no extra API key is needed and the call is billed where the session is:
     the person's default model. Never `hermes -z`, which auto-approves dangerous commands: a side
     call's prompt holds text a repository controls, and this form offers it no tool. See
     `hermes_call` for why `TE_SIDECALL` is not how it avoids the plugin's hooks.
+  * ZeroClaw: none. `zeroclaw agent -m` runs one prompt only as a configured agent, with the
+    tools that agent's risk profile allows; 0.9.0 has no option that leaves them out, and a
+    profile without tools would mean writing the person's ZeroClaw config. So, as on Antigravity,
+    micro-skills keep to the LLM-free facts and the loop guard never asks a judge.
 
 Every side call but Hermes's runs with `TE_SIDECALL=1`, which the plugin's hook entry point treats as "do
 nothing": without it the nested agent would run this plugin's hooks and recurse. A call that
@@ -749,7 +753,9 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 
 
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
-NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid"})
+# ZeroClaw 0.9.0: `zeroclaw agent -m` runs one prompt, but as a configured agent (`--agent` is
+# required) with the tools its risk profile allows, and has no flag that turns them off.
+NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid", "zeroclaw"})
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "opencode": "opencode run", "cursor": "cursor-agent -p",

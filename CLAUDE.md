@@ -1,8 +1,9 @@
 # TokenEconomizer
 
 A plugin for Claude Code, Codex, the Copilot CLI and Pi (experimentally opencode, Cursor, Grok Build,
-Hermes Agent, the Antigravity CLI, Factory Droid and Amp) that reads finished sessions and changes
-what later sessions in the same repository pay for: micro-skills, tool pruning, and a loop guard.
+Hermes Agent, the Antigravity CLI, Factory Droid, Amp and ZeroClaw) that reads finished sessions and
+changes what later sessions in the same repository pay for: micro-skills, tool pruning, and a loop
+guard.
 See `README.md` for the overview and the method, `docs/PLUGIN.md` for the design and the verified
 agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
 
@@ -13,7 +14,7 @@ agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
   - `loopguard/` — the per-call failure-loop guard and its per-repository envelope
   - `trace/` — each agent's session-log format (Claude Code, Codex, Copilot CLI, Pi, opencode,
     Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid, Amp (the plugin's own
-    thread copies))
+    thread copies), ZeroClaw)
   - `plugin/` — the runtime: hook dispatch, per-repository state, settings, the `te` CLI
   - `config.py`, `ledger.py`, `pricing.py`, `domain.py`, `stage.py` — shared by all three
 - `plugin/` — the installable plugin directory: manifests per agent, hook files, launchers
@@ -21,7 +22,8 @@ agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
   and Copilot manifests, since Codex would turn a `commands/` folder into duplicate skills), Codex
   skills (`codex-skills/`, Codex having no plugin slash commands), the Pi extension, the opencode
   plugin (`opencode/`, one file whose default export serves 1.x via `server` and 2.x via
-  `setup`), the Hermes plugin and the Amp plugin (`amp/tokeneconomizer.ts`); `lib/` links the package
+  `setup`), the Hermes plugin, the Amp plugin (`amp/tokeneconomizer.ts`) and the ZeroClaw ACP
+  relay (`zeroclaw/`); `lib/` links the package
 - `experiments/` — benchmark-only: `te_bench/` (adapters, arms, facade, benchmark-only
   controllers), `te_harness/` (Docker runners), `scripts/`, `workloads/`, its own `tests/`;
   its `README.md` is the run book

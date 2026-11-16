@@ -1,7 +1,7 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid and Amp sessions, through the hooks (on Pi, the extension events) each agent
+opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid, Amp and ZeroClaw sessions, through the hooks (on Pi, the extension events; on ZeroClaw, a relay on its ACP pipe) each agent
 exposes: what it does at each hook, what differs from the experiments and why, the agent
 behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
 the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
@@ -46,7 +46,7 @@ re-tuned. Three things it adds:
 
 **Earlier sessions** (`plugin/history.py`, `trace/sources.py`). Every agent the package reads
 keeps its sessions' logs (`trace.sources.SOURCES`: Claude Code, Codex, the Copilot CLI, Pi, Grok
-Build, Hermes, opencode, Factory Droid), so three more kinds of session can be folded: this
+Build, Hermes, opencode, ZeroClaw, Factory Droid), so three more kinds of session can be folded: this
 agent's sessions from before the plugin was installed, the other agents' sessions in the same
 repository (before and after install), and every repository the logs name (`te history import
 --all`). The first session start in a repository runs `te history import` by itself when
@@ -886,7 +886,23 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   blocked; tool pruning is not implemented. `amp -x` always runs a full agent with tools, so the
   plugin makes no model call through Amp (`sidecall.NO_SIDE_CALLS`): no paid proposer, no judge,
   and the loop guard acts only on its judge-free backstop. Not yet seen: a real interactive
-  turn with the plugin loaded, and the wording of Amp's way to cancel a turn.* **Known gaps:**
+  turn with the plugin loaded, and the wording of Amp's way to cancel a turn.
+* **ZeroClaw (experimental)** — micro-skills' LLM-free facts, on 0.9.0's ACP server
+  (`zeroclaw acp`), verified with a scripted local model in a config directory of its own
+  (`tests/test_zeroclaw.py`, `TE_ZEROCLAW_E2E=1`). ZeroClaw has no surface a plugin could use:
+  its WASM plugins are tools, channels and memory backends (`wit/v0`), its hooks config holds two
+  built-in loggers, and the personality files it puts in a system prompt come from the agent's
+  own workspace, not the session's directory. So `plugin/zeroclaw/te_zeroclaw_acp.py` is a relay
+  on the ACP pipe that the client runs in place of `zeroclaw acp`: it passes every line through,
+  reads the session's events off it, and puts context in front of the next `session/prompt` as an
+  extra text part (ACP gives a client no way into a running turn, so no redirect can be delivered).
+  The session is folded at `session/close`, `session/stop` or the pipe's end, from ZeroClaw's
+  own store (`<config dir>/data/sessions/acp-sessions.db`, `trace/zeroclaw.py`), which records
+  no exit code (a failure is a result starting with one of ZeroClaw's error prefixes) and no token
+  counts (sessions are not priced). The plugin makes no model call through ZeroClaw
+  (`sidecall.NO_SIDE_CALLS`): `zeroclaw agent -m` runs a whole agent turn, tools included, and
+  turning them off would mean writing the person's config. Tool pruning is not implemented.
+* **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s
     output only because the model repeats it, which a model may word differently or leave out;
