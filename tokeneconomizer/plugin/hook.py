@@ -33,7 +33,7 @@ def run(payload, env, host_hint=None):
     if hasattr(host, "prepare"):
         payload = host.prepare(payload, env)
     cwd = host.cwd(payload, env)
-    if privacy.live(cwd, env):
+    if privacy.live(cwd, env, payload.get("transcript_path"), payload.get("agent_transcript")):
         # Before anything is built or recorded: a session there leaves no trace in the state.
         return {privacy.EXCLUDED_KEY: True} if getattr(host, "keeps_copy", False) else {}
     ctx = LiveContext.build(host, cwd, env,

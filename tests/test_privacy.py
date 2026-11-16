@@ -210,3 +210,52 @@ def test_the_amp_plugin_keeps_no_copy_of_a_thread_in_an_excluded_workspace(
     assert not os.path.exists(copy)
     assert not os.path.isdir(store_for(env, private[0], host="amp").base)
     assert not os.path.isdir(os.path.join(env["TOKENECONOMIZER_HOME"], "repos"))
+
+
+def test_a_log_that_links_into_an_excluded_directory_is_never_read(
+        env, home, repo, private, tmp_path, monkeypatch):
+    """The verifier's second case: ordinary-looking entries under a normal repository's folder
+    whose files live in Family; and a whole project folder that is a link into Messages."""
+    family = home / "Documents" / "Family"
+    projects = home / ".claude" / "projects"
+    folder = projects / trace.claude_project_folder(repo)
+    for n in range(2):
+        real = history_log(tmp_path / "staging", repo, f"l{n}", trap(repo, n), age_s=3600 + n)
+        target = family / f"l{n}.jsonl"
+        os.replace(real, target)
+        folder.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, folder / f"l{n}.jsonl")
+    other = checkout(tmp_path / "other", "other")
+    hidden = home / "Library" / "Messages" / "agent-logs"
+    history_log(tmp_path / "staging2", other, "m1", trap(other, 1), age_s=3600)
+    os.replace(tmp_path / "staging2" / "projects" / trace.claude_project_folder(other), hidden)
+    os.symlink(hidden, projects / trace.claude_project_folder(other))
+    opened = []
+    real_open = open
+
+    def spy(path, *a, **k):
+        opened.append(os.path.realpath(path) if isinstance(path, (str, os.PathLike)) else path)
+        return real_open(path, *a, **k)
+    monkeypatch.setattr("builtins.open", spy)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all"]) == 0
+    monkeypatch.setattr("builtins.open", real_open)
+    assert not any(isinstance(p, str) and (p.startswith(str(family)) or p.startswith(str(hidden)))
+                   for p in opened)
+    assert cache_of(env) == {} or not any(
+        os.path.realpath(p).startswith((str(family), str(hidden))) for p in cache_of(env))
+    assert not os.path.isdir(store_for(env, repo).base)
+    assert not os.path.isdir(store_for(env, other).base)
+
+
+def test_a_hook_whose_transcript_links_into_an_excluded_directory_does_nothing(
+        env, home, repo, tmp_path):
+    target = home / "Documents" / "Family" / "t.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("")
+    link = tmp_path / "t.jsonl"
+    os.symlink(target, link)
+    assert call(env, {"hook_event_name": "SessionStart", "session_id": "s1", "cwd": repo,
+                      "transcript_path": str(link)}) == {}
+    assert not os.path.isdir(store_for(env, repo).base)

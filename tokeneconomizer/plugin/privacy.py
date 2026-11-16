@@ -22,9 +22,13 @@ path, and as the folder name an agent files it under: Claude Code and Droid turn
 character that is not a letter or a digit into `-`, Grok Build URL-quotes the directory. That
 folder is part of the log's path, so for those agents a log is left out before its head is
 read. A folder name cannot tell `Family-photos` from `Family/photos`, so it errs toward
-leaving such a neighbour out too. The other agents record the directory only inside the log; there the head (the first
-lines) is read to learn it, and an excluded one is dropped at once, never cached, its body never
-read.
+leaving such a neighbour out too. The other agents record the directory only inside the log;
+there the head (the first lines) is read to learn it, and an excluded one is dropped at once,
+never cached, its body never read.
+
+A log is also judged by where it really is: one that is, or sits under, a link into an excluded
+directory is left out before its head is read, whatever directory it names. So is a live
+session's transcript.
 """
 import os
 import re
@@ -115,11 +119,11 @@ class Excluded:
         if not isinstance(log, dict):
             return False
         path = log.get("path")
+        # A database row is `<db>#<id>`: the file is the database.
+        file = path.partition("#")[0] if isinstance(path, str) else None
         # The folder an agent files a log under is the log's parent, named for the directory.
-        parent = os.path.basename(os.path.dirname(path.partition("#")[0])) \
-            if isinstance(path, str) else None
-        return (self.path(path, real=False) or self.folder(log.get("folder"))
-                or self.folder(parent))
+        parent = os.path.basename(os.path.dirname(file)) if file else None
+        return (self.path(file) or self.folder(log.get("folder")) or self.folder(parent))
 
     def head(self, head):
         """Does a log's head say its session ran in an excluded directory?"""
@@ -133,13 +137,15 @@ def excluded(env=None, config=None):
     return Excluded(env, getattr(config, "history_exclude", ()) if config is not None else ())
 
 
-def live(cwd, env):
-    """Is a running session's directory `cwd` an excluded one? The directories a setting adds
-    come from the global config and the environment: the repository's own file lives in its
-    store, which a session here must not make."""
+def live(cwd, env, *transcripts):
+    """Is a running session's directory `cwd`, or one of its `transcripts`, in an excluded
+    directory?
+    The directories a setting adds come from the global config and the environment: the
+    repository's own file lives in its store, which a session here must not make."""
     from .config import load_config
     from .paths import state_root
-    return excluded(env, load_config(state_root(env), None, env)).path(cwd)
+    ex = excluded(env, load_config(state_root(env), None, env))
+    return ex.path(cwd) or any(ex.path(t) for t in transcripts)
 
 
 def for_ctx(ctx):
