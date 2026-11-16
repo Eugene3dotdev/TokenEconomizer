@@ -41,7 +41,15 @@ def pytest_configure(config):
 def _no_real_history(tmp_path_factory, monkeypatch):
     """No test reads the person's own agent logs: a first session start imports what Claude
     Code keeps under `~/.claude/projects` (`CLAUDE_CONFIG_DIR`). Both point at an empty
-    directory; a test that wants earlier sessions writes them there or names its own."""
+    directory; a test that wants earlier sessions writes them there or names its own.
+    Every other variable that places an agent's store, or the plugin's, is cleared: a harness or
+    seat that runs the suite may set them (a Buzz seat points the XDG roots at its own data)."""
+    for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+                "CODEX_HOME", "COPILOT_HOME", "PI_CODING_AGENT_DIR", "GROK_HOME", "HERMES_HOME",
+                "FACTORY_HOME", "FACTORY_HOME_OVERRIDE", "ZEROCLAW_CONFIG_DIR",
+                "ZEROCLAW_DATA_DIR", "ZEROCLAW_WORKSPACE", "MUSE_PLUGIN_DATA_DIR",
+                "TOKENECONOMIZER_HOME"):
+        monkeypatch.delenv(key, raising=False)
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
