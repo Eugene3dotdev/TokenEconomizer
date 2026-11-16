@@ -13,6 +13,7 @@ from test_history_import import ledger_ids, trap, history_log
 from test_history_sources import SID, codex_log, env, home, repo  # noqa: F401
 from test_live_hooks import call, store_for
 from tokeneconomizer import trace
+from tokeneconomizer.trace import sources
 from tokeneconomizer.plugin import cli, history, hosts, privacy
 from tokeneconomizer.plugin.config import load_config
 from tokeneconomizer.plugin.context import LiveContext
@@ -338,3 +339,27 @@ def test_a_live_fold_does_not_export_from_a_store_in_an_excluded_directory(
     host.complete(copy, "s-1", session={"hermes_home": str(ordinary),
                                         "zeroclaw_config_dir": str(ordinary)})
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("name", sorted(sources.SOURCES))
+def test_every_source_takes_the_skip_check_the_import_passes(name, env, home, repo):
+    """`history.scan` lists every source with `skip=`; a source without it raises, the scan
+    records an error and moves on, and that agent's sessions are never imported."""
+    import test_history_sources as ths
+    ths._write(name, home, repo, ths.SID.get(name, f"{name}-s1"))
+    src = sources.SOURCES[name]
+    assert src.logs(env, (), skip=lambda p: False) == src.logs(env)
+
+
+def test_import_all_reads_a_muse_session_and_not_one_run_in_an_excluded_directory(
+        env, home, repo, private, tmp_path, monkeypatch, capsys):
+    import test_history_sources as ths
+    kept = ths.muse_log(home, repo, "muse-ok", 1, age_s=3600)
+    ths.muse_log(home, private[0], "muse-private", 2, age_s=3600)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--cwd", str(tmp_path), "history", "import", "--all"]) == 0
+    assert "1 repository in the agents' history, 1 store(s), 1 session(s) read" in \
+        capsys.readouterr().out
+    cache = cache_of(env)
+    assert kept in cache and not names_private(json.dumps(cache), private)

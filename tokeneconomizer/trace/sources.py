@@ -886,7 +886,7 @@ class MuseSource(Source):
     """`<data root>/muse/sessions/YYYY/MM/DD/<session id>/session.jsonl` (`trace/muse.py`)."""
     name, label = "muse", "Muse Code"
 
-    def logs(self, env, extra_dirs=()):
+    def logs(self, env, extra_dirs=(), skip=None):
         env = os.environ if env is None else env
         if not env.get("XDG_DATA_HOME") and not _home(env):
             return []
