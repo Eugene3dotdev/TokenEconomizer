@@ -7,7 +7,7 @@ here and nowhere else:
                   `call_cwds`, `tool_usage`, `strip_rtk_prefix`;
   * `catalog`  -- the tool list a session loaded, from whichever source the agent publishes;
   * `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
-                  `opencode`, `pi` -- each agent's own session file: usage, metadata,
+                  `opencode`, `pi`, `zeroclaw` -- each agent's own session file: usage, metadata,
                   prompt-turns, and the conversions that let the readers above handle it.
                   `droid` (Factory Droid) is read as history only: the plugin runs no hooks there.
 
@@ -43,6 +43,9 @@ from .opencode import (opencode_prompt_count, opencode_run_reply, opencode_sessi
 from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_session_header,
                  pi_session_to_claude, pi_session_usage)
 from .sources import SOURCES, Source
+from .zeroclaw import (zeroclaw_config_dir, zeroclaw_export, zeroclaw_prompt_count,
+                       zeroclaw_result, zeroclaw_session_info, zeroclaw_session_to_claude,
+                       zeroclaw_session_usage, zeroclaw_tool)
 
 __all__ = [
     "RTK_PREFIX_RE", "call_cwds", "load_trajectory", "strip_rtk_prefix", "tool_usage",
@@ -72,4 +75,7 @@ __all__ = [
     "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_session_header",
     "pi_session_to_claude", "pi_session_usage",
     "SOURCES", "Source",
+    "zeroclaw_config_dir", "zeroclaw_export", "zeroclaw_prompt_count", "zeroclaw_result",
+    "zeroclaw_session_info", "zeroclaw_session_to_claude", "zeroclaw_session_usage",
+    "zeroclaw_tool",
 ]

@@ -15,6 +15,7 @@ session as an ordered list of `(tool_name, args, result_text, success)` calls th
 | `cursor.py` | Cursor Agent hook events, normalized to a Claude-shaped trajectory; usage is unavailable |
 | `grok.py` | Grok Build sessions: `updates.jsonl` (ACP updates) written as a Claude transcript; prompts and usage from its session files |
 | `hermes.py` | Hermes Agent sessions: a copy of a session's `state.db` rows without the conversation's words, written as a Claude transcript; usage |
+| `zeroclaw.py` | ZeroClaw's ACP session store: a session's rows, without the conversation's words, written as a Claude transcript; failures by ZeroClaw's error prefixes; no token counts |
 | `pi.py` | Pi's session tree: the active branch, written as a Claude transcript; usage |
 | `jsonl.py` | line and record readers shared by the above |
 

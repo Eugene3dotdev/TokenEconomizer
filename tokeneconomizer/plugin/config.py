@@ -58,7 +58,8 @@ person can tune by hand:
                                    Off: the plugin learns only from sessions it sees end;
   * history_sources             -- which agents' logs are read: `all` (default), `self` (this
                                    agent's own only), or a comma-separated list of names
-                                   (claude, codex, copilot, pi, grok, hermes, opencode, droid);
+                                   (claude, codex, copilot, pi, grok, hermes, opencode, zeroclaw,
+                                   droid);
   * history_max_sessions, history_days -- the newest sessions that import takes, and how far
                                    back it reads;
   * history_dirs                -- further Claude Code `projects` folders to read, beside

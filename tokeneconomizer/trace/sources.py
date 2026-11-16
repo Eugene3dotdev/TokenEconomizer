@@ -38,6 +38,7 @@ from . import grok as _grok
 from . import hermes as _hermes
 from . import opencode as _opencode
 from . import pi as _pi
+from . import zeroclaw as _zeroclaw
 from .jsonl import lines as _lines
 
 SOURCES = {}
@@ -714,8 +715,114 @@ class DroidSource(Source):
         return _droid.droid_session_usage(path)
 
 
+# ---- ZeroClaw --------------------------------------------------------------------------------
+class ZeroClawSource(Source):
+    """Rows of ZeroClaw's ACP session store, `<config dir>/data/sessions/acp-sessions.db`, read
+    only; a session is exported with `zeroclaw_export` (prompts replaced) before it is read. With
+    no install named in the environment, `~/.zeroclaw` and every `~/.zeroclaw-*` install beside it
+    (a second install run with `--config-dir`) are read."""
+    name, label = "zeroclaw", "ZeroClaw"
+
+    def _dbs(self, env):
+        env = os.environ if env is None else env
+        main = _zeroclaw.zeroclaw_config_dir(env)
+        dirs = [main] if main else []
+        named = any(str(env.get(k) or "").strip() for k in (
+            "ZEROCLAW_CONFIG_DIR", "ZEROCLAW_DATA_DIR", "ZEROCLAW_WORKSPACE"))
+        home = _home(env)
+        if not named and home:
+            try:
+                dirs += sorted(os.path.join(home, d) for d in os.listdir(home)
+                               if d.startswith(".zeroclaw-"))
+            except OSError:
+                pass
+        return [db for db in map(_zeroclaw.zeroclaw_db, dirs) if db and os.path.isfile(db)]
+
+    def logs(self, env, extra_dirs=()):
+        out = []
+        for db in self._dbs(env):
+            try:
+                con = _ro(db)
+                try:
+                    rows = con.execute(
+                        "SELECT session_uuid, created_at, last_activity, projected_message_count "
+                        "FROM acp_sessions ORDER BY created_at").fetchall()
+                finally:
+                    con.close()
+            except (sqlite3.Error, OSError):
+                continue
+            for r in rows:
+                sid = r["session_uuid"]
+                ended = _zeroclaw.zeroclaw_epoch(r["last_activity"]) or _zeroclaw.zeroclaw_epoch(
+                    r["created_at"])
+                if not isinstance(sid, str) or not sid or ended is None:
+                    continue
+                out.append({"id": sid, "path": _db_ref(db, sid), "mtime": ended,
+                            "size": int(r["projected_message_count"] or 0) * 1024})
+        return out
+
+    def head(self, path):
+        db, sid = _split_ref(path)
+        if not db:
+            return super().head(path)
+        try:
+            con = _ro(db)
+            try:
+                row = con.execute("SELECT session_uuid, agent_alias, workspace_dir, created_at "
+                                  "FROM acp_sessions WHERE session_uuid = ?", (sid,)).fetchone()
+            finally:
+                con.close()
+        except (sqlite3.Error, OSError):
+            return None                          # could not read now: not cached, asked again
+        if not row:
+            return super().head(path)
+        cwd = row["workspace_dir"] if isinstance(row["workspace_dir"], str) else None
+        # A session opened with no directory runs in its agent's own workspace, which belongs
+        # to no repository.
+        agents = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(db))), "agents")
+        if cwd and os.path.normpath(os.path.dirname(cwd)) == os.path.normpath(os.path.join(
+                agents, str(row["agent_alias"] or ""))) and os.path.basename(cwd) == "workspace":
+            cwd = None
+        return {"session_id": row["session_uuid"], "cwd": cwd or None,
+                "started": _zeroclaw.zeroclaw_epoch(row["created_at"]), "headless": False,
+                "folder": None}
+
+    def materialize(self, path, workdir):
+        db, sid = _split_ref(path)
+        if not db:
+            return path if os.path.isfile(str(path)) else None
+        out = os.path.join(workdir, f"zeroclaw-{sid}.json")
+        return out if _zeroclaw.zeroclaw_export(db, sid, out) else None
+
+    def prompt_count(self, path):
+        db, sid = _split_ref(path)
+        if not db:
+            return _zeroclaw.zeroclaw_prompt_count(path)
+        try:
+            con = _ro(db)
+            try:
+                row = con.execute(
+                    "SELECT count(*) AS n FROM acp_messages m JOIN acp_sessions s ON "
+                    "s.id = m.session_id WHERE s.session_uuid = ? AND m.role = 'user' AND "
+                    "m.content IS NOT NULL AND m.content != '' AND m.content != ?",
+                    (sid, _zeroclaw.TRIM_BREADCRUMB)).fetchone()
+            finally:
+                con.close()
+        except (sqlite3.Error, OSError):
+            return None
+        return int(row["n"]) if row else None
+
+    def to_trace(self, path, workdir):
+        out = os.path.join(workdir, "zeroclaw_trace.jsonl")
+        n = _zeroclaw.zeroclaw_session_to_claude(path, out)
+        return out if n is not None else None
+
+    def usage(self, path):
+        return _zeroclaw.zeroclaw_session_usage(path)
+
+
 for _s in (ClaudeSource(), CodexSource(), CopilotSource(), PiSource(), GrokSource(),
-           HermesSource(), OpenCodeSource(), DroidSource()):
+           HermesSource(), OpenCodeSource(), DroidSource(), ZeroClawSource()):
     register(_s)
 
 
