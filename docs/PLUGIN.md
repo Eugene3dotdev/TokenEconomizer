@@ -1,7 +1,7 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI and Factory Droid sessions, through the hooks (on Pi, the extension events) each agent
+opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid and Amp sessions, through the hooks (on Pi, the extension events) each agent
 exposes: what it does at each hook, what differs from the experiments and why, the agent
 behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
 the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
@@ -868,7 +868,25 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   agy versions (unknown, not zero), and the transcript names no model, so session cost is priced
   on the ledger's labelled fallback. macOS and Linux only: agy runs hook commands through
   `cmd /c` on Windows, and the launcher is a POSIX shell script.
-* **Known gaps:**
+* **Amp (`amp`, experimental)** — micro-skills and the loop guard, through a plugin
+  (`plugin/amp/tokeneconomizer.ts`) written against Amp 0.0.1794283240 and the plugin API that
+  `amp plugins show-docs` prints. What was captured live: `amp plugins list` loads the plugin
+  (it runs the plugin's code) and lists its four events and three commands; `amp plugins exec`
+  dispatches one event through the real runtime, which runs under Amp's own binary with the
+  plugin's directory as its working directory, so the repository comes from
+  `ctx.workspaceRoot` (a `file://` URI) and `amp -x` is told apart by the parent process's
+  arguments. Amp keeps no thread on the machine (`amp threads export` downloads one from the
+  server), so the plugin writes its own copy, `~/.tokeneconomizer/amp-threads/<id>.jsonl`, from
+  each `agent.end`'s messages, and `trace/amp.py` reads it and an export's JSON alike. There is no
+  system-prompt hook: context is appended to the user's message at `agent.start` (hidden from
+  the UI, inside `<tokeneconomizer>` tags that the reader strips), and a redirect to the tool
+  result at `tool.result`. There is no session end: a thread is handed over at the plugin's
+  `onDispose` (about 3 seconds), after `amp -x`'s single turn, or by the next session start
+  once its copy has been quiet for ten minutes. No `tool.call` handler, so nothing is ever
+  blocked; tool pruning is not implemented. `amp -x` always runs a full agent with tools, so the
+  plugin makes no model call through Amp (`sidecall.NO_SIDE_CALLS`): no paid proposer, no judge,
+  and the loop guard acts only on its judge-free backstop. Not yet seen: a real interactive
+  turn with the plugin loaded, and the wording of Amp's way to cancel a turn.* **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s
     output only because the model repeats it, which a model may word differently or leave out;

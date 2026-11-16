@@ -6,7 +6,7 @@ here and nowhere else:
   * `calls`    -- `load_trajectory`: any agent's log as ordered `(name, args, result, ok)` calls;
                   `call_cwds`, `tool_usage`, `strip_rtk_prefix`;
   * `catalog`  -- the tool list a session loaded, from whichever source the agent publishes;
-  * `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
+  * `amp`, `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
                   `opencode`, `pi` -- each agent's own session file: usage, metadata,
                   prompt-turns, and the conversions that let the readers above handle it.
 
@@ -27,6 +27,8 @@ from .codex import (codex_capability_trace, codex_exec_calls, codex_prompt_count
 from .copilot import (copilot_event_calls, copilot_mcp_servers, copilot_prompt_count,
                       copilot_session_meta, copilot_session_usage, copilot_turns,
                       mcp_server_of)
+from .amp import (amp_prompt_count, amp_result, amp_thread_head, amp_thread_to_claude,
+                  amp_thread_usage, amp_tool)
 from .antigravity import (antigravity_prompt_count, antigravity_read,
                           antigravity_session_to_claude, antigravity_session_usage)
 from .cursor import cursor_events_to_claude, cursor_prompt_count
@@ -57,6 +59,8 @@ __all__ = [
     "codex_session_meta", "codex_session_usage", "rollout_item_to_exec",
     "copilot_event_calls", "copilot_mcp_servers", "copilot_prompt_count", "copilot_session_meta",
     "copilot_session_usage", "copilot_turns", "mcp_server_of",
+    "amp_prompt_count", "amp_result", "amp_thread_head", "amp_thread_to_claude",
+    "amp_thread_usage", "amp_tool",
     "antigravity_prompt_count", "antigravity_read", "antigravity_session_to_claude",
     "antigravity_session_usage",
     "cursor_events_to_claude", "cursor_prompt_count",

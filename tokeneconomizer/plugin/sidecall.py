@@ -45,6 +45,10 @@ so no extra API key is needed and the call is billed where the session is:
     autonomy still offers Read, Grep, LS, FetchUrl and WebSearch. `--only-tools TodoWrite`
     leaves only its planning tool (`--list-tools`, no model call), a possible route once a run
     on a model the person chooses has shown its reply and usage (`NO_SIDE_CALLS`).
+  * Amp: none, for the same reason. `amp -x` runs a full agent turn with the shell, file and web
+    tools, and neither a flag nor `amp.tools.disable` in a `--settings-file` turns them off
+    (0.0.1794283240: `amp tools list` is unchanged under it). The plugin API's `amp.ai` calls
+    are billed to the thread and answer only yes/no or a choice, not the text a proposer writes.
   * Hermes: `hermes chat -Q --oneshot --source tool --ignore-rules --max-turns 1 -t bot_room` on
     the person's default model. Never `hermes -z`, which auto-approves dangerous commands: a side
     call's prompt holds text a repository controls, and this form offers it no tool. See
@@ -745,7 +749,7 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 
 
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
-NO_SIDE_CALLS = frozenset({"antigravity", "droid"})
+NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid"})
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "opencode": "opencode run", "cursor": "cursor-agent -p",

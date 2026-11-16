@@ -30,6 +30,7 @@ import re
 import sqlite3
 from urllib.parse import unquote
 
+from . import amp as _amp
 from . import claude as _claude
 from . import codex as _codex
 from . import copilot as _copilot
@@ -682,6 +683,54 @@ class OpenCodeSource(Source):
         return _opencode.opencode_session_usage(path)
 
 
+# ---- Amp -------------------------------------------------------------------------------------
+_AMP_FILE_RE = re.compile(r"^(T-[0-9A-Za-z-]+)\.(jsonl|json)$")
+
+
+class AmpSource(Source):
+    """`<state root>/amp-threads/`: Amp keeps no thread on the machine, so its history is what
+    the plugin copied there as threads ran (`<thread id>.jsonl`), and any thread saved with
+    `amp threads export <thread id> > <thread id>.json` beside them (`trace.amp`). Where both
+    exist for a thread, the newer file is read. The state root is found as the plugin finds it,
+    through `TOKENECONOMIZER_HOME`, else `~/.tokeneconomizer`."""
+    name, label = "amp", "Amp"
+
+    def logs(self, env, extra_dirs=()):
+        base = _base(env, "TOKENECONOMIZER_HOME", ".tokeneconomizer")
+        if not base:
+            return []
+        root = os.path.join(base, "amp-threads")
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return []
+        best = {}
+        for n in names:
+            m = _AMP_FILE_RE.match(n)
+            if not m:
+                continue
+            for log in _stat_logs([os.path.join(root, n)], [m.group(1)]):
+                if m.group(1) not in best or log["mtime"] > best[m.group(1)]["mtime"]:
+                    best[m.group(1)] = log
+        return [best[k] for k in sorted(best)]
+
+    def head(self, path):
+        h = _amp.amp_thread_head(path)
+        return {"session_id": h.get("id"), "cwd": h.get("cwd"), "started": h.get("created"),
+                "headless": bool(h.get("headless")), "folder": None}
+
+    def prompt_count(self, path):
+        return _amp.amp_prompt_count(path)
+
+    def to_trace(self, path, workdir):
+        out = os.path.join(workdir, "amp_trace.jsonl")
+        n = _amp.amp_thread_to_claude(path, out)
+        return out if n is not None else None
+
+    def usage(self, path):
+        return _amp.amp_thread_usage(path)
+
+
 # ---- Factory Droid ----------------------------------------------------------------------------
 class DroidSource(Source):
     name, label = "droid", "Factory Droid"
@@ -715,7 +764,7 @@ class DroidSource(Source):
 
 
 for _s in (ClaudeSource(), CodexSource(), CopilotSource(), PiSource(), GrokSource(),
-           HermesSource(), OpenCodeSource(), DroidSource()):
+           HermesSource(), OpenCodeSource(), AmpSource(), DroidSource()):
     register(_s)
 
 

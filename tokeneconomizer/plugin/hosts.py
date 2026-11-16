@@ -492,6 +492,97 @@ class OpenCode(Host):
         return transcript_path
 
 
+class Amp(Host):
+    """Amp (ampcode CLI), through the plugin in `plugin/amp/`.
+
+    Amp has no hook protocol of its own -- plugins are TypeScript functions on its event bus,
+    run by Bun inside Amp -- so the plugin speaks THIS one on Amp's behalf, as the Pi extension
+    does. What it sends:
+
+      * `session_id`, the thread id (`T-...`); `cwd`, Amp's workspace root (the plugin process
+        itself runs in the plugin's directory);
+      * `prompt_id`, which it numbers itself, for the turn identity Amp does not stamp;
+      * `transcript_path`, the plugin's copy of the thread, `<state root>/amp-threads/<thread
+        id>.jsonl` (`trace/amp.py`): Amp keeps no thread on the machine. Where that copy holds
+        no prompt, the fold asks Amp for the thread instead (`complete`);
+      * `tool_response = {content, isError, exit_code}`, with `exit_code` from the shell tool's
+        `exitCode`;
+      * Amp's mode in `TE_AMP_MODE`: `execute` (headless, `amp -x`) or `interactive`.
+
+    Context reaches the model only as text appended to the person's message (`agent.start`'s
+    returned `message`); the thread keeps that message, so a resumed thread carries it.
+    """
+    name = "amp"
+    prompt_context = True              # the plugin appends it to the prompt's message
+    # From Amp's own key hints, not yet seen in a run: Esc cancels the turn; `amp -x` ends on
+    # Ctrl+C.
+    interrupt = "Press Esc to cancel the turn."
+    end_run = "Press Ctrl+C to end the run."
+    STATE_DIR = "amp-threads"
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or "")
+
+    def headless(self, env, transcript=None):
+        return str(env.get("TE_AMP_MODE", "")).strip() == "execute"
+
+    def tool_call(self, p):
+        name, args, text, code = super().tool_call(p)
+        mapped, margs = trace.amp_tool(name, args)
+        return ("bash" if mapped == "Bash" else mapped), margs, text, code
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "amp_trace.jsonl")
+        n = trace.amp_thread_to_claude(transcript_path, out)
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.amp_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.amp_thread_usage(transcript_path)
+
+    def complete(self, transcript_path, session_id, cwd=None, session=None):
+        """The plugin's copy of the thread, or, where it holds no prompt (the plugin was loaded
+        after the thread's turns, or could not write), Amp's own export of it, saved beside the
+        copy as `<thread id>.json`. `amp threads export` fetches the thread from Amp's server,
+        signed in as the person is; it sends nothing. The copy stays as it was if Amp has
+        nothing, or cannot be reached."""
+        import subprocess
+        from .paths import state_root
+        from .sidecall import program
+        if (trace.amp_prompt_count(transcript_path or "")
+                or not re.fullmatch(r"T-[\w-]+", session_id or "")):
+            return transcript_path
+        path = os.path.join(state_root(), self.STATE_DIR, f"{session_id}.json")
+        env = dict(os.environ, TE_SIDECALL="1")
+        try:
+            out = subprocess.run([*program(os.environ.get("TE_AMP_CLI") or "amp"), "threads",
+                                  "export", session_id], capture_output=True, encoding="utf-8",
+                                 errors="replace", timeout=60, env=env,
+                                 stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return transcript_path
+        if out.returncode != 0 or not (out.stdout or "").lstrip().startswith("{"):
+            return transcript_path
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(out.stdout)
+            if trace.amp_prompt_count(tmp):
+                os.replace(tmp, path)
+                return path
+        except OSError:
+            pass
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return transcript_path
+
+
 class Cursor(Host):
     """Cursor Agent hooks, translated to the shared live-controller contract.
 
@@ -1230,7 +1321,7 @@ def _ancestor_args(limit=4):
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode,
          "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity, "droid": Droid}
+         "antigravity": Antigravity, "droid": Droid, "amp": Amp}
 
 
 def default_host(env=None, recent=None):
@@ -1263,6 +1354,8 @@ def detect(payload, env=None, hint=None):
         return Antigravity()
     tp = str((payload or {}).get("transcript_path") or "")
     sp = tp.replace("\\", "/")              # a Windows path, with either separator
+    if f"/{Amp.STATE_DIR}/" in sp:
+        return Amp()
     # grok runs Claude Code's plugin hooks, with no `--host`, so it is told from Claude Code
     # first: it alone sends `hookEventName` and keeps its sessions under `~/.grok/sessions`. Its
     # environment names it too, but hooks inherit the parent's environment (a Claude Code
