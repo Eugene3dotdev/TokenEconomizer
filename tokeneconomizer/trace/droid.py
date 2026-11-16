@@ -19,7 +19,9 @@ Droid 1.5.0 logs written 2026-11-03 to 2026-11-05:
 
 Droid 1.12.1 (2026-11-16) also logs each hook run as a `user` entry naming its
 `hookEventName`, and a hook's warning as one with `systemNotice` set and the text
-"[Hook Warning] ..."; neither is a prompt either.
+"[Hook Warning] ..."; neither is a prompt either. A SessionStart hook's `additionalContext`
+is written as a `user` entry of its own, id `hook-context-<prompt id>-SessionStart`, visibility
+`llm_only`: injected context, not a prompt.
 
 `droid_session_to_claude` rewraps each conversation entry as a Claude Code transcript line, with
 Droid's tool names in Claude Code's vocabulary (`droid_tool`), so every reader built for Claude
@@ -33,7 +35,7 @@ from datetime import datetime
 
 from .jsonl import lines as _lines
 
-INJECTED_ID_PREFIXES = ("context-", "repl-tool-result:")
+INJECTED_ID_PREFIXES = ("context-", "hook-context-", "repl-tool-result:")
 _TAIL_BYTES = 64 * 1024
 _PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+?)\s*$", re.M)
 # Droid's tool names (1.5.0; counted over 40 sessions) in Claude Code's vocabulary, which the
