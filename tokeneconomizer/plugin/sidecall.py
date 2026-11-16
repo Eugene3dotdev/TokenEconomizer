@@ -57,6 +57,10 @@ so no extra API key is needed and the call is billed where the session is:
     tools that agent's risk profile allows; 0.9.0 has no option that leaves them out, and a
     profile without tools would mean writing the person's ZeroClaw config. So, as on Antigravity,
     micro-skills keep to the LLM-free facts and the loop guard never asks a judge.
+  * Muse Code: none. `muse exec` runs a full agent turn; 1.4.20 has `--disable-shell`,
+    `--disable-write` and `--disable-web-tools`, but no run has yet shown what a turn under
+    them may still call (`read_file`, `search`, the reminder agents), so it is treated as
+    Antigravity is (`NO_SIDE_CALLS`).
 
 Every side call but Hermes's runs with `TE_SIDECALL=1`, which the plugin's hook entry point treats as "do
 nothing": without it the nested agent would run this plugin's hooks and recurse. A call that
@@ -761,11 +765,12 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
 # ZeroClaw 0.9.0: `zeroclaw agent -m` runs one prompt, but as a configured agent (`--agent` is
 # required) with the tools its risk profile allows, and has no flag that turns them off.
-NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid", "zeroclaw"})
+# Muse Code 1.4.20: `muse exec` turns some tools off by flag, but not all of them (see above).
+NO_SIDE_CALLS = frozenset({"antigravity", "amp", "droid", "zeroclaw", "muse"})
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "opencode": "opencode run", "cursor": "cursor-agent -p",
-          "hermes": "hermes chat", "droid": "droid exec"}
+          "hermes": "hermes chat", "droid": "droid exec", "muse": "muse exec"}
 
 
 def call_name(host_name):

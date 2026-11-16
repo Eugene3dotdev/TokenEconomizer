@@ -1384,6 +1384,100 @@ class ZeroClaw(Host):
     def session_usage(self, transcript_path):
         return trace.zeroclaw_session_usage(transcript_path)
 
+
+class Muse(Host):
+    """Muse Code (`muse`, Meta), through the plugin's native Muse manifest
+    (`.muse-plugin/plugin.json`), whose hooks run `muse/<event>` and pass `--host muse`.
+    Verified on 1.4.20 (2026-11-16) in a disposable profile (`XDG_CONFIG_HOME`,
+    `XDG_DATA_HOME`).
+
+    Muse speaks Claude Code's hook contract (snake_case payloads on stdin,
+    `hookSpecificOutput.additionalContext` on stdout), with these differences:
+
+      * A hook runs only once the person approves the installed plugin (`muse plugins approve`);
+        its command is an argv, and no two hooks may run the same file, hence a launcher per
+        event.
+      * Every payload carries `session_id`, `cwd`, `hook_event_name`, `model`,
+        `model_provider` and `permission_mode` (`default`, `bypassPermissions`), and
+        `transcript_path` is always null: the log is found from the session id under Muse's
+        data root (`trace.muse_find_session`). The hook environment names the session in
+        `MUSE_SESSION_ID`. It is filtered: `HOME`, `PATH` and Muse's own `MUSE_*` reach a
+        hook, `XDG_DATA_HOME` and `TOKENECONOMIZER_HOME` do not, so the data root is read
+        from `MUSE_PLUGIN_DATA_DIR` and the state root is `~/.tokeneconomizer`.
+      * `UserPromptSubmit`, the tool events and `Stop` carry `turn_id`, the turn's identity
+        (which, without `model_provider`, would read as Codex's).
+      * The reminder agents Muse runs beside a turn fire `PreToolUse` / `PostToolUse` of their
+        own, under a session id that is not `MUSE_SESSION_ID` and with no `SessionStart`;
+        `prepare` drops them, as they are not the person's session.
+      * A shell call is `bash` (`{command, description, workdir}`), and its result (`tool_response`,
+        or a failed call's `error` in `PostToolUseFailure`) is a JSON string with `exit_code`
+        and `output` (`trace.muse_result`).
+      * SessionStart's `additionalContext` reaches the model (a `runtime_hook` context block).
+      * No side calls (`sidecall.NO_SIDE_CALLS`).
+    """
+    name = "muse"
+    prompt_context = False             # not verified on 1.4.20
+    interrupt = "Press Esc to interrupt it."
+    end_run = "Press Ctrl+C to end the run."
+
+    def env_session_id(self, env):
+        return str(env.get("TE_SESSION_ID") or env.get("MUSE_SESSION_ID") or "")
+
+    def turn_key(self, p):
+        return str(p.get("turn_id") or "")
+
+    def prepare(self, payload, env):
+        p = dict(payload or {})
+        sid = self.session_id(p)
+        root = env.get("MUSE_SESSION_ID")
+        if root and sid and sid != root:
+            p["hook_event_name"] = ""          # a reminder agent's call
+            return p
+        if sid and not p.get("transcript_path"):
+            p["transcript_path"] = trace.muse_find_session(trace.muse_sessions_dir(env),
+                                                           sid) or ""
+        return p
+
+    def tool_call(self, p):
+        name, args = trace.muse_tool(str(p.get("tool_name") or ""), p.get("tool_input"))
+        resp = p.get("tool_response")
+        if resp is None:
+            resp = p.get("error")
+        text, code, failed = trace.muse_result(resp if isinstance(resp, (str, dict)) else
+                                               response_text(resp))
+        if code is None and name == "Bash" and failed:
+            code = 1
+        return name, args, text[:RESULT_CAP], code
+
+    def headless(self, env, transcript=None):
+        return any(_MUSE_EXEC.search(a) for a in _ancestor_args())
+
+    def complete(self, transcript_path, session_id, cwd=None, session=None):
+        """The log Muse kept, found again from the session id where none was recorded (a
+        session whose first hook ran before the log was written)."""
+        if transcript_path and os.path.exists(transcript_path):
+            return transcript_path
+        data = (session or {}).get("muse_data_dir") or trace.muse_data_dir()
+        return trace.muse_find_session(os.path.join(data, "sessions"), session_id) or \
+            transcript_path
+
+    def session_state(self, env):
+        return {"muse_data_dir": trace.muse_data_dir(env)}
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "muse_trace.jsonl")
+        n = trace.muse_session_to_claude(transcript_path, out) if transcript_path else None
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.muse_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.muse_session_usage(transcript_path)
+
+
+
+_MUSE_EXEC = re.compile(r"(?:^|[\s/])muse\s+exec(?:\s|$)")
 _DROID_EXEC = re.compile(r"(?:^|[\s/])droid(?:\.\w+)?\s+exec(?:\s|$)")
 _PROMPT_FLAG = re.compile(r"\s(?:-p|--prompt)(?:[\s=]|$)")
 
@@ -1412,7 +1506,8 @@ def _ancestor_args(limit=4):
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode,
          "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity, "droid": Droid, "amp": Amp, "zeroclaw": ZeroClaw}
+         "antigravity": Antigravity, "droid": Droid, "amp": Amp, "zeroclaw": ZeroClaw,
+         "muse": Muse}
 
 
 def default_host(env=None, recent=None):
@@ -1433,6 +1528,8 @@ def default_host(env=None, recent=None):
         return "grok"
     if env.get("FACTORY_SESSION_ID"):          # Droid's tool shell (1.12.1)
         return "droid"
+    if env.get("MUSE_SESSION_ID"):             # Muse Code's hooks (1.4.20)
+        return "muse"
     return recent if recent in HOSTS else "claude"
 
 
@@ -1454,6 +1551,9 @@ def detect(payload, env=None, hint=None):
     if ("hookEventName" in (payload or {}) or "/.grok/sessions/" in sp
             or (not tp and any((env or {}).get(k) for k in ("GROK_HOOK_EVENT", "GROK_SESSION_ID")))):
         return Grok()
+    # Muse Code sends `turn_id` too, with a null transcript and a `model_provider` (1.4.20).
+    if not tp and "model_provider" in (payload or {}):
+        return Muse()
     if "turn_id" in (payload or {}):
         return Codex()
     if sp.rsplit("/", 1)[-1].startswith("rollout-") or "/.codex/" in sp:

@@ -1,7 +1,7 @@
 # The plugin: design and verified agent behaviour
 
 How the plugin runs the three mechanisms inside your own Claude Code, Codex, Copilot CLI, Pi,
-opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid, Amp and ZeroClaw sessions, through the hooks (on Pi, the extension events; on ZeroClaw, a relay on its ACP pipe) each agent
+opencode, Cursor, Grok Build, Hermes Agent, Antigravity CLI, Factory Droid, Amp, Muse Code and ZeroClaw sessions, through the hooks (on Pi, the extension events; on ZeroClaw, a relay on its ACP pipe) each agent
 exposes: what it does at each hook, what differs from the experiments and why, the agent
 behaviour each choice rests on, where its state lives, and its known limitations. The code is `tokeneconomizer/plugin/` (what
 the hooks run) and `plugin/` (the packaging for each agent). To install and use it, see
@@ -46,7 +46,7 @@ re-tuned. Three things it adds:
 
 **Earlier sessions** (`plugin/history.py`, `trace/sources.py`). Every agent the package reads
 keeps its sessions' logs (`trace.sources.SOURCES`: Claude Code, Codex, the Copilot CLI, Pi, Grok
-Build, Hermes, opencode, ZeroClaw, Factory Droid), so three more kinds of session can be folded: this
+Build, Hermes, opencode, ZeroClaw, Factory Droid, Muse Code), so three more kinds of session can be folded: this
 agent's sessions from before the plugin was installed, the other agents' sessions in the same
 repository (before and after install), and every repository the logs name (`te history import
 --all`). The first session start in a repository runs `te history import` by itself when
@@ -735,6 +735,39 @@ at authentication, after `SessionStart` and before any model call; its `SessionE
   default read-only autonomy keeps Read, Grep, LS, FetchUrl and WebSearch; `--only-tools TodoWrite`
   leaves only its planning tool, which is untried as a completion.
 
+**Muse Code 1.4.20 -- checked 2026-11-16** in a disposable profile (`XDG_CONFIG_HOME` and
+`XDG_DATA_HOME` pointing into a temporary directory, and `HOME` too for the real turn, since the
+hooks keep only `HOME`), from `muse plugins --help`, `muse exec --help`, the binary's own strings
+and its output, with one real turn on `muse-wonder-full-1.0` (Meta subscription).
+* **Install.** `muse plugins install <dir> --scope user` reads the native manifest
+  (`.muse-plugin/plugin.json`; it warns that it ignores the Claude Code and Codex manifests beside
+  it), copies the directory to `<data root>/plugins/cache/local/<id>/<sha>/package` without the
+  `lib` link (which points outside it), and records `source.path` in `plugins/installed.json`,
+  where `scripts/te_bootstrap.py` finds the checkout. Hooks run only after `muse plugins approve
+  <id>`. A hook is an argv (`["sh", "muse/<event>"]`), and two hooks may not share a source file,
+  hence one launcher per event.
+* **Payloads.** Claude Code's snake_case fields plus `model`, `model_provider` and
+  `permission_mode` (`default`, `bypassPermissions`); `transcript_path` is always null, so the
+  plugin finds `<data root>/sessions/YYYY/MM/DD/<id>/session.jsonl` from the session id (a UUIDv7,
+  whose time is the folder's date). `UserPromptSubmit`, the tool events and `Stop` carry
+  `turn_id`; `hosts.detect` tells Muse from Codex by `model_provider` with no transcript. A shell
+  call is `bash`, its result a JSON string (`exit_code`, `output`); a failed one comes as
+  `PostToolUseFailure` with the same string in `error`. The reminder agents Muse runs beside a turn
+  fire tool hooks under their own session id and no `SessionStart`; the plugin drops them.
+* **Environment.** Hooks get `HOME`, `PATH`, `MUSE_SESSION_ID`, `MUSE_PLUGIN_ROOT` and
+  `MUSE_PLUGIN_DATA_DIR` (`<data root>/plugins/data/<id>`), but not `XDG_DATA_HOME` or
+  `TOKENECONOMIZER_HOME`: the state root is always `~/.tokeneconomizer`, and the data root is read
+  from `MUSE_PLUGIN_DATA_DIR`.
+* **Observed through the plugin.** All six hooks ran from the install copy; `SessionStart`'s
+  `hookSpecificOutput.additionalContext` became a `runtime_hook` context block and the model
+  answered with the seeded fact's canary word; `PostToolUseFailure` came for `ls nosuchfile`; the
+  session was folded at `SessionEnd` with its usage read from the log's `model_completed` events.
+* **Not observed.** Whether `UserPromptSubmit` or `PostToolUse` context reaches the model (so the
+  repository map goes at session start and a redirect's delivery is unverified), whether a hook's
+  `systemMessage` is shown, resume, and the interactive TUI.
+* **Side calls: none** (`sidecall.NO_SIDE_CALLS`). `muse exec` has `--disable-shell`,
+  `--disable-write` and `--disable-web-tools`, but no run has shown what a turn under them can
+  still call.
 ## 4. State and privacy
 
 All state is local, under `$TOKENECONOMIZER_HOME` (default `~/.tokeneconomizer`), one directory
@@ -902,7 +935,13 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   counts (sessions are not priced). The plugin makes no model call through ZeroClaw
   (`sidecall.NO_SIDE_CALLS`): `zeroclaw agent -m` runs a whole agent turn, tools included, and
   turning them off would mean writing the person's config. Tool pruning is not implemented.
-* **Known gaps:**
+* **Muse Code (experimental)** — micro-skills and the loop guard, through Muse's native plugin
+  manifest (`plugin/.muse-plugin/plugin.json`) and one launcher per event (`plugin/muse/`), checked
+  on 1.4.20 with a real turn (§3). The session log is read from Muse's data root
+  (`trace/muse.py`), usage included. Muse filters the hook environment, so
+  `TOKENECONOMIZER_HOME` cannot move the plugin's state. The plugin makes no model call through
+  `muse` (`sidecall.NO_SIDE_CALLS`), so there is no paid proposer and no judge; tool pruning is not
+  implemented.* **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s
     output only because the model repeats it, which a model may word differently or leave out;

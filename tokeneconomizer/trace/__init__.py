@@ -7,7 +7,7 @@ here and nowhere else:
                   `call_cwds`, `tool_usage`, `strip_rtk_prefix`;
   * `catalog`  -- the tool list a session loaded, from whichever source the agent publishes;
   * `amp`, `antigravity`, `claude`, `codex`, `copilot`, `cursor`, `droid`, `grok`, `hermes`,
-                  `opencode`, `pi`, `zeroclaw` -- each agent's own session file: usage, metadata,
+                  `muse`, `opencode`, `pi`, `zeroclaw` -- each agent's own session file: usage, metadata,
                   prompt-turns, and the conversions that let the readers above handle it.
 
 Stdlib only.
@@ -40,6 +40,9 @@ from .grok import (grok_json_reply, grok_prompt_count, grok_result, grok_session
 from .hermes import (hermes_export, hermes_find_session, hermes_prompt_count, hermes_result,
                      hermes_row_usage, hermes_session_info, hermes_session_row,
                      hermes_session_to_claude, hermes_session_usage, hermes_tool)
+from .muse import (muse_data_dir, muse_find_session, muse_history_logs, muse_prompt_count,
+                   muse_result, muse_session_head, muse_session_to_claude, muse_session_usage,
+                   muse_sessions_dir, muse_tool)
 from .opencode import (opencode_prompt_count, opencode_run_reply, opencode_session_info,
                        opencode_session_to_claude, opencode_session_usage)
 from .pi import (pi_active_branch, pi_json_reply, pi_prompt_count, pi_session_header,
@@ -74,6 +77,9 @@ __all__ = [
     "hermes_export", "hermes_find_session", "hermes_prompt_count", "hermes_result",
     "hermes_row_usage", "hermes_session_info", "hermes_session_row", "hermes_session_to_claude",
     "hermes_session_usage", "hermes_tool",
+    "muse_data_dir", "muse_find_session", "muse_history_logs", "muse_prompt_count", "muse_result",
+    "muse_session_head", "muse_session_to_claude", "muse_session_usage", "muse_sessions_dir",
+    "muse_tool",
     "opencode_prompt_count", "opencode_run_reply", "opencode_session_info",
     "opencode_session_to_claude", "opencode_session_usage",
     "pi_active_branch", "pi_json_reply", "pi_prompt_count", "pi_session_header",

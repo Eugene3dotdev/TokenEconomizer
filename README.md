@@ -70,7 +70,7 @@ mechanisms:
 
 TokenEconomizer is a plugin for **Claude Code**, **Codex**, the **GitHub Copilot CLI** and **Pi**,
 with experimental support for **opencode**, **Cursor Agent**, **Grok Build**, **Hermes Agent**,
-the **Antigravity CLI**, **Factory Droid** and **ZeroClaw**. Each italic
+the **Antigravity CLI**, **Factory Droid**, **Muse Code** and **ZeroClaw**. Each italic
 letter above is a setting, shown with its default ([Settings](#settings)), and each mechanism can be turned on or
 off. The plugin announces each action in one line, and if any part of it fails, your session
 carries on as if it were not installed. Its model calls (the fact proposer, and the judge with the
@@ -224,6 +224,17 @@ The marketplace is named after the clone's directory (`droid plugin marketplace 
 `droid` in a repository, then check with `~/.tokeneconomizer/bin/te --host droid status`. Droid
 runs the Claude Code hook file and warns that it has no `PostToolUseFailure` event. See
 [its limits](plugin/README.md#factory-droid).
+
+**Muse Code** (experimental; micro-skills and the loop guard, with no model calls)
+
+```sh
+muse plugins install /path/to/TokenEconomizer/plugin --scope user
+muse plugins approve tokeneconomizer
+```
+
+Muse runs a plugin's hooks only once you approve it. Start `muse` in a repository, then check
+with `~/.tokeneconomizer/bin/te --host muse status`. Micro-skills is off by default:
+`te --host muse config set microskills=envfacts`. See [its limits](plugin/README.md#muse-code).
 **opencode** (experimental)
 
 ```sh
@@ -290,6 +301,7 @@ To update:
 | Antigravity CLI | build the bundle again and `agy plugin install` it |
 | Factory Droid | `git pull` in the clone, whose package the plugin runs; Droid's copy of the hook file changes only with `droid plugin update` (not yet checked) |
 | ZeroClaw | `git pull` in the clone |
+| Muse Code | `git pull` in the clone, whose package the plugin runs; a change to `plugin/` itself needs `muse plugins update tokeneconomizer` and `approve` again |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
 
@@ -311,6 +323,7 @@ uninstalling, using Copilot with your own model key, and troubleshooting.
 | Antigravity CLI (experimental) | agy 1.5.1, macOS and Linux | not tested |
 | Factory Droid (experimental) | 1.12.1, Linux, without a model call | not tested |
 | ZeroClaw (experimental) | 0.9.0, ACP server, Linux | not tested |
+| Muse Code (experimental) | 1.4.20, Linux | not tested |
 
 The commands above were tested on the oldest and newest version in each range; newer versions
 have not been tested yet.
@@ -347,6 +360,10 @@ have not been tested yet.
   the session-start reply and the fold at session end were checked in a disposable profile with no
   model call; that the facts reach Droid's model, and the loop guard in a live turn, were not.
   The plugin makes no model call through `droid`. See [its limits](plugin/README.md#factory-droid).
+- **Muse Code** support is experimental: on 1.4.20 the plugin's install and approval, the learned
+  facts reaching the model in a real turn, and the fold at session end were checked in a
+  disposable profile; the loop guard in a live turn was not. The plugin makes no model call
+  through `muse`. See [its limits](plugin/README.md#muse-code).
 
 ### Everyday commands
 
@@ -365,13 +382,14 @@ commands. They have the same names on every agent; only the way you type them di
 | Antigravity CLI | from a terminal: `~/.tokeneconomizer/bin/te --host antigravity <command>` |
 | Factory Droid | from a terminal or Droid's shell: `~/.tokeneconomizer/bin/te --host droid <command>` |
 | ZeroClaw | from a terminal: `~/.tokeneconomizer/bin/te --host zeroclaw <command>` |
+| Muse Code | from a terminal: `~/.tokeneconomizer/bin/te --host muse <command>` |
 | a terminal, in the repository | `~/.tokeneconomizer/bin/te <command>` |
 
 | Command | What it does |
 |---|---|
 | `status` | what it learned and did here, and what your sessions cost |
 | `microskills` | the facts it injects, and those still forming |
-| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent, the Antigravity CLI, Factory Droid or ZeroClaw) |
+| `toolprune` | the tools it left out, and the evidence (not on Pi, opencode, Hermes Agent, the Antigravity CLI, Factory Droid, Muse Code or ZeroClaw) |
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |
@@ -461,6 +479,7 @@ what it can leave out differs:
 | Antigravity CLI | nothing yet | — |
 | Factory Droid | nothing yet | — |
 | ZeroClaw | nothing yet | — |
+| Muse Code | nothing yet | — |
 
 Tool pruning adds only its own entries and never touches deny rules you wrote; a settings file it
 creates is kept out of git (`.git/info/exclude`). On Claude Code, the session-start line that says
