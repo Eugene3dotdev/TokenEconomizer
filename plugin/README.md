@@ -664,6 +664,45 @@ config set microskills=envfacts`.
 **Uninstall.** `rm ~/.config/amp/plugins/tokeneconomizer.ts`. Optional: `rm -rf
 ~/.tokeneconomizer/amp-threads`.
 
+## Muse Code
+
+Experimental: **micro-skills and the loop guard**, checked on Muse Code 1.4.20 with a real turn
+in a disposable profile.
+
+**1. Install.** Install the plugin directory, which carries Muse's own manifest
+(`.muse-plugin/plugin.json`), then approve it; Muse runs no plugin hook it has not been told to
+trust:
+
+```bash
+muse plugins install /path/to/TokenEconomizer/plugin --scope user
+muse plugins approve tokeneconomizer
+```
+
+`muse plugins validate` warns that it picked `.muse-plugin/plugin.json` over the Claude Code and
+Codex manifests beside it, and that the `lib` link will be dropped: Muse's copy leaves out links
+that point outside the plugin directory, so the plugin finds the package in the checkout it was
+installed from (the `source.path` Muse records in `plugins/installed.json`); keep that checkout in
+place.
+
+**2. Check it.** `muse plugins list --json` shows `tokeneconomizer` as active, with six hooks.
+Run a session, then `~/.tokeneconomizer/bin/te --host muse status` in the repository. Micro-skills
+is off by default: `te --host muse config set microskills=envfacts`.
+
+**How it works, and what it does not do.**
+
+- Each hook event has a launcher of its own under `muse/`, because Muse refuses two hooks that
+  run the same file; each runs `scripts/te-hook --host muse`.
+- Muse runs hooks with a filtered environment: `HOME`, `PATH` and its own `MUSE_*` variables reach
+  them, `TOKENECONOMIZER_HOME` and `XDG_DATA_HOME` do not. So the plugin's state is always
+  `~/.tokeneconomizer`, and Muse's sessions are found from the plugin's data directory
+  (`MUSE_PLUGIN_DATA_DIR`).
+- The learned facts are added at session start. The reminder agents Muse runs beside a turn fire
+  tool hooks of their own; the plugin ignores them.
+- The plugin makes no model call through `muse`: no run has yet shown that `muse exec` can answer
+  with every tool off. So micro-skills' paid proposer never runs, and the loop guard redirects a
+  turn only at its backstop. Tool pruning is not available.
+
+**Uninstall.** `muse plugins remove tokeneconomizer`.
 ## ZeroClaw
 
 Experimental: **micro-skills' LLM-free facts**, on ZeroClaw 0.9.0's ACP server (`zeroclaw acp`),

@@ -152,6 +152,20 @@ def test_hook_rows_and_hook_warnings_in_the_log_are_not_prompts(tmp_path):
     assert trace.claude_prompt_count(out) == 1
 
 
+def test_the_start_context_droid_files_as_a_hook_context_row_is_not_a_prompt(tmp_path):
+    # Droid 1.12.1 writes a SessionStart hook's additionalContext as its own `user` row, id
+    # `hook-context-<prompt id>-SessionStart`, visibility `llm_only` (live turn, 2026-11-16).
+    ctx = {"type": "message", "id": "hook-context-6f7b-SessionStart",
+           "timestamp": "2026-11-16T21:59:57.000Z",
+           "message": {"role": "user", "visibility": "llm_only",
+                       "content": [{"type": "text", "text": "- The project canary is X."}]}}
+    path = write_droid_log(sessions(tmp_path), "/work/w", "s1", [ctx] + ENTRIES)
+    assert trace.droid_prompt_count(path) == 1
+    out = str(tmp_path / "t.jsonl")
+    trace.droid_session_to_claude(path, out)
+    assert trace.claude_prompt_count(out) == 1
+
+
 def test_sessions_live_under_the_home_droid_was_given():
     assert trace.droid_sessions_dir({"FACTORY_HOME_OVERRIDE": "/o"}) == "/o/.factory/sessions"
     assert trace.droid_sessions_dir({"FACTORY_HOME": "/f", "FACTORY_HOME_OVERRIDE": "/o"}) == \

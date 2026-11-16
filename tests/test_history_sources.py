@@ -193,6 +193,42 @@ def droid_log(home, cwd, sid, i, age_s=3600):
     return _age(str(path), age_s)
 
 
+def muse_log(home, cwd, sid, i, age_s=3600):
+    """A Muse Code 1.4.20 session log, in the record shape `trace/muse.py` names."""
+    t = time.time() - age_s - 300
+    day = time.gmtime(t)
+    d = (home / ".local" / "share" / "muse" / "sessions" / f"{day.tm_year:04d}" /
+         f"{day.tm_mon:02d}" / f"{day.tm_mday:02d}" / sid)
+    d.mkdir(parents=True)
+    seq = iter(range(1, 1000))
+
+    def rec(payload_type, payload):
+        return {"schema_version": 1, "id": f"r{i}", "stream": {"kind": "session", "id": sid},
+                "sequence": next(seq), "recorded_at": int(t * 1e6), "record_type": "event",
+                "payload_type": payload_type, "payload": payload}
+
+    def ev(event):
+        return rec("runtime.session", {"kind": event["kind"], "run_id": "run1", "event": event})
+    lines = [rec("runtime.session.metadata", {"kind": "metadata", "record": {
+                 "model_id": "muse-wonder-full-1.0", "provider_id": "meta",
+                 "workspace_root": cwd}}),
+             ev({"kind": "started", "prompt": f"fix bug {i}"})]
+    for n, (name, args, out, failed) in enumerate(trap_calls(cwd, i)):
+        lines.append(ev({"kind": "assistant_tool_calls_committed", "message_id": f"m{n}",
+                         "tool_calls": [{"name": "bash", "call_id": f"call_{n}",
+                                         "args": json.dumps(dict(args, workdir=cwd))}]}))
+        lines.append(ev({"kind": "tool_result_batch_committed", "results": [
+            {"tool_call_id": f"call_{n}", "text": json.dumps({
+                "command": args["command"], "exit_code": 127 if failed else 0,
+                "terminal_status": "failed" if failed else "completed", "output": out})}]}))
+    lines.append(ev({"kind": "model_completed", "model": "muse-wonder-full-1.0", "usage": {
+        "input_tokens": 100, "cached_tokens": 60, "cache_read_tokens": 60,
+        "cache_write_tokens": 0, "output_tokens": 5, "reasoning_tokens": 0}}))
+    path = d / "session.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return _age(str(path), age_s)
+
+
 def amp_copy(home, cwd, sid, i, age_s=3600):
     """The plugin's copy of an Amp thread (Amp keeps none on the machine), in the state root
     the `env` fixture names."""
@@ -420,6 +456,8 @@ def _write(name, home, cwd, sid, i=0, age_s=3600):
         return amp_copy(home, cwd, sid, i, age_s)
     if name == "zeroclaw":
         return zeroclaw_db(home, [(sid, cwd, age_s)])
+    if name == "muse":
+        return muse_log(home, cwd, sid, i, age_s)
     raise AssertionError(name)
 
 

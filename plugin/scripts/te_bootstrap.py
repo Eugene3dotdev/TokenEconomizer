@@ -21,6 +21,9 @@ The package is found, in order:
                                          Factory Droid's copy, under
                                          `<factory home>/plugins/cache/`, likewise, from the
                                          record in its `plugins/known_marketplaces/`;
+                                         Muse Code's, under `<data root>/muse/plugins/
+                                         cache/local/`, from `source.path` in its
+                                         `plugins/installed.json`;
   5. an installed package            -- `pip install` of the repository.
 
 When none has it, a hook answers `{}` as always, and says why once in the plugin's errors.log.
@@ -87,6 +90,27 @@ def _droid_marketplace_sources(home, market):
             continue
     return out
 
+def _muse_sources(plugin_root):
+    """For a Muse Code install copy (`<data root>/muse/plugins/cache/local/<plugin>/<sha>/
+    package`, 1.4.20), the checkout this plugin directory was installed from: the
+    `source.path` its record in `plugins/installed.json` names, and the repository around it.
+    Muse's copy drops the `lib` symlink, which points outside the plugin directory."""
+    import json
+    parts = plugin_root.rstrip(os.sep).split(os.sep)
+    if len(parts) < 7 or parts[-1] != "package" or parts[-4] != "local" or \
+            parts[-5] != "cache" or parts[-6] != "plugins":
+        return []
+    plugins = os.sep.join(parts[:-5])
+    try:
+        doc = json.load(open(os.path.join(plugins, "installed.json"), encoding="utf-8"))
+        source = ((doc.get("plugins") or {}).get(parts[-3]) or {}).get("source") or {}
+        path = source.get("path")
+    except (IOError, OSError, ValueError, AttributeError):
+        return []
+    if not path:
+        return []
+    return [os.path.join(path, "lib"), os.path.dirname(os.path.normpath(path))]
+
 def _marketplace_sources(plugin_root):
     """For a Codex install copy (`<home>/plugins/cache/<marketplace>/<plugin>/<version>`), the
     `source` its `config.toml` records for that marketplace (a local one), and the checkout Codex
@@ -146,7 +170,7 @@ def core_path():
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for cand in ([os.environ.get("TE_CORE_PATH"), os.path.join(plugin_root, "lib"),
                   _symlink_stub(plugin_root), os.path.dirname(plugin_root)]
-                 + _marketplace_sources(plugin_root)):
+                 + _marketplace_sources(plugin_root) + _muse_sources(plugin_root)):
         if cand and os.path.isfile(os.path.join(cand, "tokeneconomizer", "plugin", "hook.py")):
             return cand
     return None

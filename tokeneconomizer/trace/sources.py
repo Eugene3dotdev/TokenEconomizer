@@ -39,6 +39,7 @@ from . import copilot as _copilot
 from . import droid as _droid
 from . import grok as _grok
 from . import hermes as _hermes
+from . import muse as _muse
 from . import opencode as _opencode
 from . import pi as _pi
 from . import zeroclaw as _zeroclaw
@@ -880,8 +881,39 @@ class ZeroClawSource(Source):
         return _zeroclaw.zeroclaw_session_usage(path)
 
 
+# ---- Muse Code -------------------------------------------------------------------------------
+class MuseSource(Source):
+    """`<data root>/muse/sessions/YYYY/MM/DD/<session id>/session.jsonl` (`trace/muse.py`)."""
+    name, label = "muse", "Muse Code"
+
+    def logs(self, env, extra_dirs=(), skip=None):
+        env = os.environ if env is None else env
+        if not env.get("XDG_DATA_HOME") and not _home(env):
+            return []
+        return [{"id": sid, "path": path, "mtime": mtime, "size": size}
+                for sid, path, mtime, size in _muse.muse_history_logs(
+                    _muse.muse_sessions_dir(env))]
+
+    def head(self, path):
+        h = _muse.muse_session_head(path)
+        return {"session_id": h.get("session_id"), "cwd": h.get("cwd"),
+                "started": h.get("started"), "headless": False, "folder": None}
+
+    def prompt_count(self, path):
+        return _muse.muse_prompt_count(path)
+
+    def to_trace(self, path, workdir):
+        out = os.path.join(workdir, "muse_trace.jsonl")
+        n = _muse.muse_session_to_claude(path, out)
+        return out if n is not None else None
+
+    def usage(self, path):
+        return _muse.muse_session_usage(path)
+
+
 for _s in (ClaudeSource(), CodexSource(), CopilotSource(), PiSource(), GrokSource(),
-           HermesSource(), OpenCodeSource(), AmpSource(), DroidSource(), ZeroClawSource()):
+           HermesSource(), OpenCodeSource(), AmpSource(), DroidSource(), ZeroClawSource(),
+           MuseSource()):
     register(_s)
 
 
