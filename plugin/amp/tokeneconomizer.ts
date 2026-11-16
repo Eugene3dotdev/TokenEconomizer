@@ -25,7 +25,9 @@
  *
  * Amp keeps no thread on the machine, so the copy (`<state root>/amp-threads/<thread id>.jsonl`,
  * private to its owner) is what the fold and the history import read. The plugin process runs
- * in the plugin's own directory: the repository is Amp's workspace root.
+ * in the plugin's own directory: the repository is Amp's workspace root. In a workspace the
+ * dispatcher answers is excluded (`privacy.py`: the Messages and Photos libraries, a family
+ * folder, the PARA reference and archive trees), no copy is kept and no further event is sent.
  *
  * Like the hooks on the other agents it fails open: a dispatcher that is missing, slow or
  * broken answers "no change". It does nothing under TE_SIDECALL=1 or TE_DISABLE=1, and it
@@ -41,6 +43,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -205,6 +208,9 @@ const stateRoot = () =>
 		process.env.TOKENECONOMIZER_HOME || join(homedir(), ".tokeneconomizer"),
 	);
 
+/** The dispatcher's answer for a workspace whose sessions are never kept (`privacy.EXCLUDED_KEY`). */
+export const EXCLUDED_KEY = "tokeneconomizer_excluded";
+
 export const copyPath = (threadID: string) =>
 	join(stateRoot(), "amp-threads", `${threadID}.jsonl`);
 
@@ -313,6 +319,7 @@ export default function tokeneconomizer(amp: PluginAPI) {
 	const prompts = new Map<string, number>();
 	const turns = new Map<string, string>();
 	const open = new Set<string>();
+	let excluded = false; // the workspace is an excluded directory: nothing is copied or sent
 
 	const base = (threadID: string) => ({
 		session_id: threadID,
@@ -336,12 +343,21 @@ export default function tokeneconomizer(amp: PluginAPI) {
 				open.add(threadID);
 				prompts.set(threadID, 0);
 				const resumed = existsSync(copyPath(threadID));
-				ensureCopy(threadID, cwd);
 				const out = await hook({
 					...base(threadID),
 					hook_event_name: "SessionStart",
 					source: resumed ? "resume" : "startup",
 				});
+				if (out?.[EXCLUDED_KEY]) {
+					excluded = true;
+					try {
+						rmSync(copyPath(threadID), { force: true });
+					} catch {
+						/* fail open */
+					}
+					return;
+				}
+				ensureCopy(threadID, cwd);
 				manuals.set(threadID, out?.hookSpecificOutput?.additionalContext ?? "");
 				await notify(ctx, out?.systemMessage);
 			})();
@@ -353,6 +369,7 @@ export default function tokeneconomizer(amp: PluginAPI) {
 	const end = (threadID: string, reason: string, sync = false) => {
 		if (!open.delete(threadID)) return;
 		starts.delete(threadID);
+		if (excluded) return;
 		const payload = {
 			...base(threadID),
 			hook_event_name: "SessionEnd",
@@ -371,6 +388,7 @@ export default function tokeneconomizer(amp: PluginAPI) {
 		const id = event?.thread?.id;
 		if (!id) return;
 		await start(id, ctx);
+		if (excluded) return;
 		const n = (prompts.get(id) ?? 0) + 1;
 		prompts.set(id, n);
 		const turn = `${id}:${n}`;
@@ -398,7 +416,7 @@ export default function tokeneconomizer(amp: PluginAPI) {
 
 	amp.on("tool.result", async (event, ctx) => {
 		const id = event?.thread?.id;
-		if (!id) return;
+		if (!id || excluded) return;
 		const { text, exit } = toolText(event.output);
 		const shown =
 			text ||
@@ -439,6 +457,7 @@ export default function tokeneconomizer(amp: PluginAPI) {
 		const id = event?.thread?.id;
 		if (!id) return;
 		if (!open.has(id)) await start(id, ctx);
+		if (excluded) return;
 		appendMessages(id, cwd, event.messages ?? []);
 		// An `error` end can come in the middle of a turn that Amp then retries; the turn is
 		// closed by its real end, or by the next prompt.

@@ -63,7 +63,11 @@ person can tune by hand:
   * history_max_sessions, history_days -- the newest sessions that import takes, and how far
                                    back it reads;
   * history_dirs                -- further Claude Code `projects` folders to read, beside
-                                   `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`).
+                                   `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`);
+  * history_exclude             -- further directories whose sessions are never read, cached,
+                                   learned from or hooked, beside the ones always excluded
+                                   (`privacy.py`). The hooks of a running session read it from
+                                   the global file and the environment only.
 
 The names before the mechanisms were renamed are read too, so an existing config file keeps
 working: `inject` (microskills), `untool` (toolprune), `spiral` (loopguard), with their
@@ -186,6 +190,7 @@ class LiveConfig:
     history_max_sessions: int = 200
     history_days: int = 365
     history_dirs: list = field(default_factory=list)
+    history_exclude: list = field(default_factory=list)
     history_sources: list = field(default_factory=lambda: ["all"])
     shadow: bool = False
     vocabulary: str = "auto"
@@ -308,6 +313,7 @@ _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow",
         "TE_HERMES_CLI": "hermes_cli",
         "TE_HISTORY_IMPORT": "history_import", "TE_HISTORY_MAX_SESSIONS": "history_max_sessions",
         "TE_HISTORY_DAYS": "history_days", "TE_HISTORY_DIRS": "history_dirs",
+        "TE_HISTORY_EXCLUDE": "history_exclude",
         "TE_HISTORY_SOURCES": "history_sources"}
 _ENV_THRESHOLDS = ("TE_SPIRAL_THRESHOLDS", "TE_LOOPGUARD_THRESHOLDS")
 

@@ -26,13 +26,17 @@ def _truthy(v):
 
 def run(payload, env, host_hint=None):
     """Handle one hook payload; returns the output dict (no I/O, so tests call it directly)."""
-    from . import hosts
+    from . import hosts, privacy
     from .context import LiveContext
     from .controller import LiveController
     host = hosts.detect(payload, env, hint=host_hint)
     if hasattr(host, "prepare"):
         payload = host.prepare(payload, env)
-    ctx = LiveContext.build(host, host.cwd(payload, env), env,
+    cwd = host.cwd(payload, env)
+    if privacy.live(cwd, env):
+        # Before anything is built or recorded: a session there leaves no trace in the state.
+        return {privacy.EXCLUDED_KEY: True} if getattr(host, "keeps_copy", False) else {}
+    ctx = LiveContext.build(host, cwd, env,
                             session_id=host.session_id(payload) or None, settle=False)
     if not ctx.config.enabled:
         return {}

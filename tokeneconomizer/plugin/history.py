@@ -76,6 +76,13 @@ Reading 15,000 log heads for every plan would be slow, so the heads are cached i
 `<root>/history-cache.json`, keyed by path and valid while the log's mtime and size hold. The
 cache is derived state: deleting it costs one slow scan.
 
+A session that ran in an excluded directory (`privacy`: the Messages and Photos libraries, a
+family folder, the PARA reference and archive trees, and `history_exclude`) is never read:
+left out before its head is read where the log's folder names the directory, else as soon as
+its head does, and never cached, planned, folded or counted. A cache an earlier version wrote
+is cleared of such entries when it is loaded, a saved plan's such sessions are left out
+(`excluded`), and a repository in an excluded directory imports nothing.
+
 `history.json` (beside `folded.json`):
 
     {"state": "running" | "partial" | "done" | "skipped" | "stopped", "reason",
@@ -90,7 +97,7 @@ import traceback
 
 from .. import loopguard, trace
 from ..trace import sources as _sources
-from . import fold
+from . import fold, privacy
 from .hosts import _EXIT_RE, RESULT_CAP, claude_success_code
 
 STATE = fold.HISTORY
@@ -105,6 +112,7 @@ MAX_ATTEMPTS = 2                   # runs that died on one session before it is 
 MAX_RETRIES = 3                    # runs that could not read one session before it is folded as such
 CATCHUP_EVERY_S = 600              # how often a session start looks for other agents' sessions
 CATCHUP_PER_FOLD = 20              # earlier sessions a live fold folds first, at most
+EXCLUDED = "the repository is in an excluded directory (see privacy.py)"
 FOLDER_MATCHED = ("claude", "droid")   # agents that file logs under a folder named for the cwd
 _clock = time.monotonic            # the run's budget clock
 
@@ -292,13 +300,26 @@ class _Heads:
     Read once per process, written back once, best effort; a cache that cannot be read or
     written only costs the reads it would have saved."""
 
-    def __init__(self, root):
+    def __init__(self, root, excluded=None):
         from .store import Store
         self.store = Store(root)
+        self.excluded = privacy.excluded() if excluded is None else excluded
         doc = self.store.read(CACHE)
         self.doc = doc if isinstance(doc, dict) else {}
         self.dirty = False
         self.present = set()
+        # What an earlier version cached of a session in an excluded directory goes now.
+        for path in [p for p, v in self.doc.items() if self._out(p, v)]:
+            del self.doc[path]
+            self.dirty = True
+
+    def _out(self, path, hit):
+        head = hit.get("head") if isinstance(hit, dict) else None
+        return self.excluded.log({"path": path}) or self.excluded.head(head)
+
+    def forget(self, path):
+        if self.doc.pop(path, None) is not None:
+            self.dirty = True
 
     def _entry(self, log):
         path = log["path"]
@@ -312,7 +333,11 @@ class _Heads:
     def head(self, source, log):
         """The log's head, read once per (path, mtime, size). A reader that could not answer
         (an exception, or None: a locked database, a file mid-write) is not cached and is asked
-        again next time; an empty head stands in for this pass."""
+        again next time; an empty head stands in for this pass. None for a session in an
+        excluded directory: its log is not read, or its head is dropped as soon as read."""
+        if self.excluded.log(log):
+            self.forget(log["path"])
+            return None
         hit = self._entry(log)
         if not isinstance(hit.get("head"), dict):
             try:
@@ -321,8 +346,14 @@ class _Heads:
                 head = None
             if not isinstance(head, dict):
                 return dict(_EMPTY_HEAD)
+            if self.excluded.head(head):
+                self.forget(log["path"])
+                return None
             hit["head"] = head
             self.dirty = True
+        elif self.excluded.head(hit["head"]):
+            self.forget(log["path"])
+            return None
         return hit["head"]
 
     def prompts(self, source, log):
@@ -347,8 +378,9 @@ class _Heads:
 
 
 def scan(ctx, heads, beat=None):
-    """Every enabled source's logs with their heads: [(source, log, head)]. Reads, and writes
-    nothing but the cache `heads` (and, through `beat`, a run's heartbeat)."""
+    """Every enabled source's logs with their heads: [(source, log, head)], but those of sessions
+    in an excluded directory (`privacy`). Reads, and writes nothing but the cache `heads`
+    (and, through `beat`, a run's heartbeat)."""
     out, present = [], set()
     for source in _enabled_sources(ctx):
         extra = ctx.config.history_dirs if source.name == "claude" else ()
@@ -360,8 +392,11 @@ def scan(ctx, heads, beat=None):
         for log in logs:
             if beat is not None:
                 beat()
+            head = heads.head(source, log)
+            if head is None:
+                continue                         # an excluded directory's: never kept
             present.add(log["path"])
-            out.append((source, log, heads.head(source, log)))
+            out.append((source, log, head))
     heads.present = present
     return out
 
@@ -386,7 +421,7 @@ def plan(ctx, now=None, heads=None, cache=None, beat=None):
     retrying = state.get("retry") if isinstance(state.get("retry"), dict) else {}
     skipped, found = {}, []
     cache = {} if cache is None else cache
-    heads = _Heads(ctx.root) if heads is None else heads
+    heads = _Heads(ctx.root, privacy.for_ctx(ctx)) if heads is None else heads
 
     def skip(why):
         skipped[why] = skipped.get(why, 0) + 1
@@ -454,6 +489,16 @@ def _still_eligible(ctx, item):
     # very id; a file must at least carry the id in its path.
     if ("#" in path and path.rpartition("#")[2] != sid) or ("#" not in path and sid not in path):
         return "unsafe_id"
+    ex = privacy.for_ctx(ctx)
+    if ex.path(ctx.repo.root) or ex.log({"path": path, "folder": item.get("folder")}):
+        return "excluded"
+    # A plan saved before this check may name another checkout of the repository in an excluded
+    # directory: its head, which the fold would read first anyway, says where the session ran.
+    try:
+        if ex.head(source.head(path)):
+            return "excluded"
+    except Exception:
+        pass
     key = _key_for(ctx, source, sid)
     if key in (ctx.store.read("folded.json") or {}):
         return "already_folded"
@@ -629,6 +674,13 @@ def run(ctx, auto=False, now=None, budget_s=BUDGET_S, log=None, heads=None, cach
                     and isinstance(doc.get("plan"), list) and bool(doc.get("plan")))
         if auto and not blocking:
             return {"state": state or "none", "reason": "nothing to resume"}
+        if privacy.for_ctx(ctx).path(ctx.repo.root):
+            # A plan saved before the directory was excluded is dropped, not resumed.
+            doc.pop("plan", None)
+            doc.update(state="stopped", reason=EXCLUDED, at=time.time())
+            _save(ctx, doc)
+            return {"state": "stopped", "reason": EXCLUDED, "imported": doc.get("imported", 0),
+                    "read": 0}
         if auto and not ctx.config.history_import:
             doc.update(state="stopped", reason="history_import is off", at=time.time())
             _save(ctx, doc)
@@ -800,7 +852,8 @@ def catch_up(ctx, before, limit=CATCHUP_PER_FOLD):
     """Under the fold lock, before a live session that ended at `before` is folded: fold the
     imported-eligible sessions that ended before it (and after the watermark), oldest first, at
     most `limit`. Nothing while an import runs or `history_import` is off. Returns how many."""
-    if not ctx.config.history_import or fold.import_blocks(ctx):
+    if (not ctx.config.history_import or fold.import_blocks(ctx)
+            or privacy.for_ctx(ctx).path(ctx.repo.root)):
         return 0
     try:
         p = plan(ctx)
@@ -854,6 +907,8 @@ def maybe_start(ctx, now=None):
     one whose process died -- in a detached `te history import` (inline when TE_FOLD_SYNC=1,
     for tests). Reads only `history.json`."""
     now = time.time() if now is None else now
+    if privacy.for_ctx(ctx).path(ctx.repo.root):
+        return None
     exists = os.path.exists(ctx.store.path(STATE))
     if exists and read_state(ctx) is None:
         return None                     # unreadable: left alone (and it blocks no fold)
@@ -986,13 +1041,14 @@ def repositories(root, env, cfg, heads=None):
     ctx = _Ctx()
     ctx.root, ctx.env, ctx.config = root, env, cfg
     ctx.host = _hosts.HOSTS["claude"]()
-    heads = _Heads(root) if heads is None else heads
+    ex = privacy.for_ctx(ctx)
+    heads = _Heads(root, ex) if heads is None else heads
     groups, ids = {}, {}
     entries = scan(ctx, heads)
     heads.save(heads.present)
     for source, log, head in entries:
         cwd = head.get("cwd")
-        if not (isinstance(cwd, str) and os.path.isdir(cwd)):
+        if not (isinstance(cwd, str) and os.path.isdir(cwd)) or ex.path(cwd):
             continue
         if cwd not in ids:
             try:
@@ -1000,7 +1056,7 @@ def repositories(root, env, cfg, heads=None):
             except (OSError, ValueError):
                 ids[cwd] = None
         repo = ids[cwd]
-        if repo is None or repo.how == "dir":
+        if repo is None or repo.how == "dir" or ex.path(repo.root):
             continue
         g = groups.setdefault(repo.key, {"repo": repo, "hosts": set(), "newest": 0.0,
                                          "sessions": 0})
@@ -1021,7 +1077,7 @@ def run_all(root, env, cfg, dry_run=False, log=None, build=None):
     build = build or (lambda host, cwd: LiveContext.build(host, cwd, env))
     # One head cache and one identity cache for every store of the host: the logs are read
     # once, not once per store.
-    heads, cache = _Heads(root), {}
+    heads, cache = _Heads(root, privacy.excluded(env, cfg)), {}
     groups = repositories(root, env, cfg, heads=heads)
     order = sorted(groups.values(), key=lambda g: -g["newest"])
     totals = {"repos": len(order), "stores": 0, "imported": 0, "dry_run": dry_run}

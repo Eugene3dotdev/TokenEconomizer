@@ -418,6 +418,7 @@ class OpenCode(Host):
       * opencode's mode in `TE_OPENCODE_MODE`: `run` (headless, `opencode run`) or `tui`.
     """
     name = "opencode"
+    keeps_copy = True                  # the plugin writes the session's export (privacy.EXCLUDED_KEY)
     prompt_context = True              # the plugin appends it to the system prompt
     interrupt = "Press Esc to interrupt it."
     end_run = "Press Ctrl+C to end the run."
@@ -514,6 +515,7 @@ class Amp(Host):
     """
     name = "amp"
     prompt_context = True              # the plugin appends it to the prompt's message
+    keeps_copy = True                  # the plugin writes the thread's copy (privacy.EXCLUDED_KEY)
     # From Amp's own key hints, not yet seen in a run: Esc cancels the turn; `amp -x` ends on
     # Ctrl+C.
     interrupt = "Press Esc to cancel the turn."

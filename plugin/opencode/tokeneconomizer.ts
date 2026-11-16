@@ -31,6 +31,10 @@
  * `session.execution.{succeeded,failed,interrupted}` ends a turn where those events exist, and
  * the documented `session.idle` ends it where they do not.
  *
+ * In a directory the dispatcher answers is excluded (`privacy.py`: the Messages and Photos
+ * libraries, a family folder, the PARA reference and archive trees), no export is written and no
+ * further event is sent.
+ *
  * Like the hooks on the other agents it fails open: a dispatcher that is missing, slow or
  * broken answers "no change". It does nothing under TE_SIDECALL=1 (the plugin's own side calls)
  * or TE_DISABLE=1.
@@ -78,6 +82,9 @@ function launch(
 		[join(SCRIPTS, "te_bootstrap.py"), kind, ...args],
 	];
 }
+
+/** The dispatcher's answer for a directory whose sessions are never kept (`privacy.EXCLUDED_KEY`). */
+const EXCLUDED_KEY = "tokeneconomizer_excluded";
 
 const childEnv = () => ({
 	...process.env,
@@ -188,6 +195,7 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 	const turns = new Map<string, string>();
 	const open = new Set<string>();
 	let current = "";
+	let excluded = false; // the directory is an excluded one: nothing is exported or sent
 
 	const base = (sessionID: string, transcript = "") => ({
 		session_id: sessionID,
@@ -217,12 +225,13 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 			hook_event_name: "SessionStart",
 			source: "startup",
 		});
+		if (out?.[EXCLUDED_KEY]) excluded = true;
 		manuals.set(sessionID, out?.hookSpecificOutput?.additionalContext ?? "");
 		await notify(out?.systemMessage);
 	};
 
 	const end = async (sessionID: string, reason: string) => {
-		if (!open.delete(sessionID)) return;
+		if (!open.delete(sessionID) || excluded) return;
 		const file = exportSession(sessionID, directory);
 		await hook({
 			...base(sessionID, file),
@@ -234,6 +243,7 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 	// Where the process ends without a `session.deleted` (quitting the TUI, `opencode run`
 	// finishing), the sessions still open are handed over, once, synchronously.
 	process.once("exit", () => {
+		if (excluded) open.clear();
 		for (const sessionID of open) {
 			hookSync({
 				...base(sessionID, exportSession(sessionID, directory)),
@@ -254,6 +264,7 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 				const id = props.sessionID;
 				if (!id) return;
 				if (!open.has(id)) await start(id);
+				if (excluded) return;
 				// The session is exported at the end of every turn and its path sent with `Stop`: the
 				// TUI gives a plugin no chance to hand a session over when it is quit, and a session
 				// whose export has gone quiet is folded by the next session's start.
@@ -277,6 +288,7 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 			if (!id) return;
 			current = id;
 			if (!open.has(id)) await start(id);
+			if (excluded) return;
 			const n = (prompts.get(id) ?? 0) + 1;
 			prompts.set(id, n);
 			const turn = `${id}:${n}`;
@@ -309,7 +321,7 @@ const TokenEconomizer: Plugin = async ({ client, directory }) => {
 
 		"tool.execute.after": async (input: any, output: any) => {
 			const id: string = input?.sessionID;
-			if (!id) return;
+			if (!id || excluded) return;
 			const meta = (output?.metadata ?? {}) as Record<string, unknown>;
 			const exit = typeof meta.exit === "number" ? meta.exit : undefined;
 			const text = String(output?.output ?? "");
@@ -367,6 +379,7 @@ const setupV2 = async (ctx: any) => {
 	const records = new Map<string, any[]>(); // sessionID -> messages, in the export's shape
 	const steps = new Map<string, any>(); // assistantMessageID -> assistant message
 	const names = new Map<string, string>(); // tool call id -> tool name
+	let excluded = false; // an excluded directory: nothing kept or sent
 
 	const base = (sessionID: string, transcript = "") => ({
 		session_id: sessionID,
@@ -410,11 +423,16 @@ const setupV2 = async (ctx: any) => {
 			hook_event_name: "SessionStart",
 			source: "startup",
 		});
+		if (out?.[EXCLUDED_KEY]) {
+			excluded = true;
+			records.clear();
+			return;
+		}
 		manuals.set(id, out?.hookSpecificOutput?.additionalContext ?? "");
 		notify(out?.systemMessage);
 	};
 	const end = async (id: string, reason: string) => {
-		if (!open.delete(id)) return;
+		if (!open.delete(id) || excluded) return;
 		await hook({
 			...base(id, writeExport(id)),
 			hook_event_name: "SessionEnd",
@@ -426,7 +444,7 @@ const setupV2 = async (ctx: any) => {
 	 * A turn the plugin never saw open (a plugin reload mid-turn) is closed by the next prompt's
 	 * hook in the dispatcher instead. */
 	const closeTurn = async (id: string) => {
-		if (!unsettled.delete(id)) return;
+		if (!unsettled.delete(id) || excluded) return;
 		await hook({
 			...base(id, writeExport(id)),
 			hook_event_name: "Stop",
@@ -436,6 +454,7 @@ const setupV2 = async (ctx: any) => {
 		if (mode() === "run") await end(id, "run");
 	};
 	process.once("exit", () => {
+		if (excluded) open.clear();
 		for (const id of open)
 			hookSync({
 				...base(id, writeExport(id)),
@@ -465,6 +484,7 @@ const setupV2 = async (ctx: any) => {
 		await ctx.session.hook("prompt", async (e: any) => {
 			const id: string = e.sessionID;
 			await start(id);
+			if (excluded) return;
 			const n = (prompts.get(id) ?? 0) + 1;
 			prompts.set(id, n);
 			const turn = `${id}:${n}`;
@@ -506,6 +526,7 @@ const setupV2 = async (ctx: any) => {
 	try {
 		await ctx.tool.hook("execute.after", async (e: any) => {
 			const id: string = e.sessionID;
+			if (excluded) return;
 			const ok = e.status === "completed";
 			const result = ok ? e.result : undefined;
 			const text = ok
@@ -552,7 +573,7 @@ const setupV2 = async (ctx: any) => {
 				const p = ev?.properties ?? ev?.data ?? ev;
 				if (!t?.startsWith("session.")) continue;
 				const id: string = p?.sessionID;
-				if (!id) continue;
+				if (!id || excluded) continue;
 				if (t === "session.step.started") {
 					const m = assistant(id, p.assistantMessageID);
 					m.info.modelID = p.model?.id ?? p.model?.modelID ?? m.info.modelID;

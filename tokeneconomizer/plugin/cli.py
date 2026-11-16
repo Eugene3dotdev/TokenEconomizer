@@ -586,6 +586,7 @@ def _config_view(cfg):
                     "history_max_sessions": d.pop("history_max_sessions"),
                     "history_days": d.pop("history_days"),
                     "history_dirs": d.pop("history_dirs"),
+                    "history_exclude": d.pop("history_exclude"),
                     "history_sources": d.pop("history_sources")},
         "other": d,
         "warnings": cfg.warnings,
