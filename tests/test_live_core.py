@@ -1209,7 +1209,7 @@ def test_copilot_side_calls_name_a_model_a_byok_provider_can_serve():
     byok = {"COPILOT_PROVIDER_BASE_URL": "https://api.anthropic.com",
             "COPILOT_PROVIDER_TYPE": "anthropic"}
     # `auto` is the subscription's router; a BYOK provider has none, and the call answered nothing
-    assert copilot_model("", dict(byok, COPILOT_MODEL="auto")) == "claude-opus-5"
+    assert copilot_model("", dict(byok, COPILOT_MODEL="auto")) == "claude-opus-5-5"
     assert copilot_model("", dict(byok, COPILOT_MODEL="claude-sonnet-5")) == "claude-sonnet-5"
     assert copilot_model("claude-opus-5", byok) == "claude-opus-5"           # paid_model wins
     assert copilot_model("", {"COPILOT_MODEL": "auto"}) == ""                # subscription
@@ -1217,7 +1217,7 @@ def test_copilot_side_calls_name_a_model_a_byok_provider_can_serve():
     # OpenRouter wants its own ids, whichever wire Copilot speaks to it
     for wire in ("anthropic", "openai"):
         assert copilot_model("", {"COPILOT_PROVIDER_BASE_URL": "https://openrouter.ai/api",
-                                  "COPILOT_PROVIDER_TYPE": wire}) == "anthropic/claude-opus-5"
+                                  "COPILOT_PROVIDER_TYPE": wire}) == "anthropic/claude-opus-5.5"
 
 
 def test_side_calls_default_to_opus_and_never_name_haiku(monkeypatch):

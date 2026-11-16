@@ -698,7 +698,7 @@ COPILOT_TOOLS = ("bash", "read_bash", "write_bash", "stop_bash", "list_bash", "v
 
 # The default model by BYOK provider type, in the ids that provider expects (Opus, as
 # `CLAUDE_DEFAULT_MODEL`; never Haiku).
-BYOK_DEFAULT_MODEL = {"anthropic": "claude-opus-5"}
+BYOK_DEFAULT_MODEL = {"anthropic": "claude-opus-5-5"}
 
 
 def copilot_model(paid_model="", env=None):
@@ -714,7 +714,7 @@ def copilot_model(paid_model="", env=None):
             return v
     base = env.get("COPILOT_PROVIDER_BASE_URL") or ""
     if "openrouter.ai" in base:            # OpenRouter's own ids, on either wire
-        return "anthropic/claude-opus-5"
+        return "anthropic/claude-opus-5.5"
     if base:
         return BYOK_DEFAULT_MODEL.get((env.get("COPILOT_PROVIDER_TYPE") or "openai").lower(), "")
     return ""

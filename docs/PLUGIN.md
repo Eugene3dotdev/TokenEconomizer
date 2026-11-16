@@ -242,7 +242,7 @@ feature flags):
   includes the `cacheWriteTokens`, which the ledger splits out.
 * **The plugin's own model calls under BYOK.** With `COPILOT_MODEL=auto` (the subscription's router) in the
   environment, `copilot -p` without a model answered nothing. The side call now names a model:
-  `paid_model`, else a concrete `COPILOT_MODEL`, else (since TEO-1472) `claude-opus-5` on an Anthropic
+  `paid_model`, else a concrete `COPILOT_MODEL`, else (since TEO-1472) `claude-opus-5-5` on an Anthropic
   provider; the check described here ran on `claude-haiku-4-5`. It answered, and was priced from its own session log. The local capture behind
   `refresh-catalog` and `measure` mimics the person's model family, so it records the same
   built-in tools (`edit`/`create` for Claude models, not `apply_patch`). Copilot 1.0.83 does not
