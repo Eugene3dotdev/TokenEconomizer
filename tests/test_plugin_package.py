@@ -396,6 +396,39 @@ console.log(JSON.stringify([
     assert json.loads(run.stdout) == ["", facts, facts, "", "", facts]
 
 
+def test_the_pi_manual_reaches_the_prompt_with_or_without_sections():
+    """Pi 0.99 and later hand the extension a `sections` object, and the manual is one section of
+    it; Pi 0.79.x has none and takes an extension's text only as a returned `systemPrompt`, so
+    there the manual is appended to the base prompt in the same tagged form. Run through Node."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    ext = os.path.join(PLUGIN, "pi", "tokeneconomizer.ts")
+    script = """
+const { pathToFileURL } = await import("node:url");
+const { applyManual } = await import(pathToFileURL(process.argv[1]).href);
+const modern = { systemPrompt: "base", systemPromptOptions: { cwd: "/x", sections: { cwd: "c" } } };
+const modernResult = applyManual(modern, "- fact");
+const legacy = { systemPrompt: "base", systemPromptOptions: { cwd: "/x" } };
+console.log(JSON.stringify([
+  modernResult ?? null, modern.systemPromptOptions.sections,
+  applyManual(legacy, "- fact"), legacy.systemPromptOptions,
+  applyManual(legacy, "") ?? null,
+]));
+"""
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, ext],
+                         capture_output=True, text=True, timeout=60)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [
+        None, {"cwd": "c", "tokeneconomizer": "- fact"},
+        {"systemPrompt": "base\n\n<tokeneconomizer>\n- fact\n</tokeneconomizer>"}, {"cwd": "/x"},
+        None,
+    ]
+
+
 def test_the_plugin_directory_is_also_a_pi_package():
     """One directory, three agents: Pi loads the extension its `pi` manifest names, and that
     extension drives the same launchers the Claude Code and Codex hooks run."""

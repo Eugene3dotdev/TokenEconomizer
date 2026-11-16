@@ -170,6 +170,32 @@ export function carriedSection(entries: any[]): string {
 		: text;
 }
 
+/** Put the manual into this prompt's system prompt. From Pi 0.99, `systemPromptOptions` always
+ * carries a `sections` object, and the manual is one named section of it (a returned
+ * `systemPrompt` there would force the whole prompt into one opaque block). Earlier Pi (0.79.x)
+ * has no sections: it rebuilds the base prompt for every prompt and takes an extension's text
+ * only as a returned `systemPrompt`, so the section is appended in the same tagged form. */
+export function applyManual(
+	event: any,
+	manual: string,
+): { systemPrompt: string } | undefined {
+	if (!manual) return undefined;
+	const options = event?.systemPromptOptions;
+	if (
+		options &&
+		typeof options.sections === "object" &&
+		options.sections !== null
+	) {
+		options.sections = { ...options.sections, [SECTION]: manual };
+		return undefined;
+	}
+	const base =
+		typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
+	return {
+		systemPrompt: `${base}${base ? "\n\n" : ""}<${SECTION}>\n${manual}\n</${SECTION}>`,
+	};
+}
+
 export default function tokeneconomizer(pi: ExtensionAPI) {
 	let manual = "";
 	let prompts = 0;
@@ -215,12 +241,7 @@ export default function tokeneconomizer(pi: ExtensionAPI) {
 			manual = manual ? `${manual}\n\n${extra}` : extra;
 		}
 		notify(ctx, out?.systemMessage);
-		if (manual) {
-			event.systemPromptOptions.sections = {
-				...(event.systemPromptOptions.sections ?? {}),
-				[SECTION]: manual,
-			};
-		}
+		return applyManual(event, manual);
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
